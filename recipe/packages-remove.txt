@@ -229,6 +229,7 @@ luci-proto-wireguard
 wireguard-tools
 
 # NAS 共享/网盘（linkease/unishare/samba/webdav/mergerfs，无需求）
+# 注意：rpcbind 已撤销剔除——NFS 服务器（nfs-kernel-server）硬依赖它，见 packages-add.txt
 linkease
 linkease-common-bin
 luci-i18n-linkease-zh-cn
@@ -237,7 +238,6 @@ luci-i18n-samba4-zh-cn
 luci-i18n-unishare-zh-cn
 luci-lib-linkeasefile
 mergerfs
-rpcbind
 unishare
 webdav2
 
@@ -277,24 +277,23 @@ radeon-firmware
 #   kmod-drm（kmod-rknpu 硬依赖，NPU）
 #   luci-theme-bootstrap（luci-light 硬依赖）
 
-# DRM 子包全家（x86/其他 GPU 用；kmod-drm 本体是 kmod-rknpu 硬依赖，保留）
+# DRM 子包（x86/其他 GPU 用；kmod-drm 本体是 kmod-rknpu 硬依赖，保留）
+# 注意：kmod-drm-display-helper / kmod-drm-kms-helper / libdrm 已从剔除名单撤销——
+#       它们是 kmod-drm-rockchip（RK3588 显示/GPU 链）的硬依赖，见 packages-add.txt
 
 kmod-drm-amdgpu
 kmod-drm-buddy
-kmod-drm-display-helper
 kmod-drm-exec
 kmod-drm-gpuvm
 kmod-drm-i915
 kmod-drm-i915-coex
 kmod-drm-ivpu
-kmod-drm-kms-helper
 kmod-drm-radeon
 kmod-drm-sched
 kmod-drm-suballoc-helper
 kmod-drm-ttm
 kmod-drm-ttm-helper
 kmod-drm-xe-sriov
-libdrm
 xe-firmware
 
 
@@ -335,7 +334,9 @@ kmod-usb-ohci-pci
 kmod-usb-uhci
 
 
-# NFS/CIFS/HFS 等文件系统与 NAS 应用（无 SMB/CIFS/NAS 需求）
+# CIFS/HFS 等文件系统（无 SMB/CIFS 需求）
+# 注意：NFS 全家（kmod-fs-nfs*/nfsd/nfs-kernel-server/nfs-utils/luci-app-nfs/rpcbind）
+#       已撤销剔除并改为安装进固件，见 packages-add.txt
 
 kmod-fs-cifs
 kmod-fs-hfs
@@ -343,20 +344,9 @@ kmod-fs-hfsplus
 kmod-fs-jfs
 kmod-fs-ksmbd
 kmod-fs-minix
-kmod-fs-nfs
-kmod-fs-nfs-common
-kmod-fs-nfs-common-rpcsec
-kmod-fs-nfs-v3
-kmod-fs-nfs-v4
-kmod-fs-nfsd
 luci-app-cifs-mount
-luci-app-nfs
 luci-app-samba4
 luci-i18n-cifs-mount-zh-cn
-luci-i18n-nfs-zh-cn
-nfs-kernel-server
-nfs-kernel-server-utils
-nfs-utils
 
 
 # 调制解调器/移动网络残留（无 3/4/5G 模块）

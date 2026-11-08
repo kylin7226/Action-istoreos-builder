@@ -20,3 +20,33 @@
 # 自带网页界面（默认端口 9876）。apk 由 workflow 从 dllkids feed 注入。
 ddns-go
 luci-app-ddns-go
+
+# RK3588 GPU 驱动（Mali-G610，Bifrost/CSF 架构）：
+#   kmod-rkgpu-bifrost-csf 会自动带上 mali-csf-firmwareg25p0-00eac0 固件、
+#   kmod-dma-buf、kmod-rockchip-system-monitor（后两者镜像里已有）
+#   kmod-drm-rockchip 是 Rockchip 显示 DRM 驱动（依赖 kmod-drm-display-helper →
+#   kmod-drm-kms-helper → kmod-drm，均自动解析；这三项已从 packages-remove.txt 撤销）
+#   libdrm 是 DRM 用户态库
+kmod-rkgpu-bifrost-csf
+kmod-drm-rockchip
+libdrm
+# 可选：kmod-rga3（RK 2D 加速器 RGA），需要就取消注释
+# kmod-rga3
+
+# RK3588 多媒体内核驱动：
+#   kmod-rk_vcodec = RKMPP 视频编解码内核驱动（VPU，依赖的
+#                    kmod-rockchip-system-monitor 镜像里已有）
+#   kmod-rga3      = RGA 2D 加速器内核驱动
+#   注意：用户态库 librockchip_mpp / librga 在 IB、dllkids feed、
+#   ImmortalWrt 官方仓库里都没有，需要第三方包源或源码编译（见 README）
+kmod-rk_vcodec
+kmod-rga3
+
+# NFS 服务器（内核态）：luci-app-nfs 提供 LuCI 界面，
+#   nfs-kernel-server 自动带上 rpcbind/kmod-fs-nfs*/nfsd 等依赖
+#   （这些包已全部从 packages-remove.txt 撤销剔除）
+luci-app-nfs
+luci-i18n-nfs-zh-cn
+nfs-kernel-server
+nfs-kernel-server-utils
+nfs-utils

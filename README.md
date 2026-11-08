@@ -46,12 +46,16 @@
 | `recipe/packages-add.txt` | 追加安装 | 逐行追加到 `PACKAGES=` |
 | `recipe/packages-remove.txt` | 剔除 | 逐行转成 `-包名` 负号语法 |
 
-两个列表当前为空 = 构建基线固件（profile 默认包 + LuCI 管理界面套件），先验证流程，之后再按需增删。
+两个列表当前内容（本地验证 317 包 / 89MB）：
+
+- **add**：ddns-go + luci-app-ddns-go（feed 注入）；RK3588 GPU 驱动 `kmod-rkgpu-bifrost-csf`（Mali-G610，自动带 CSF 固件）+ `kmod-drm-rockchip` + `libdrm`；多媒体内核驱动 `kmod-rk_vcodec`（RKMPP VPU）+ `kmod-rga3`（RGA 2D）；NFS 服务器全套 `luci-app-nfs` + `nfs-kernel-server` 等
+- **remove**：对照 bluise 精简清单的 300+ 项负号剔除（WiFi/调制解调器/NAS 网盘/SMB/x86 驱动等；均不在镜像中的为防御性空操作，防上游 IB 更新后默认引入）
 
 基线固件包含：
-- **profile 默认包**（IB 保证）：内核、驱动（kmod-r8169 网卡 / kmod-nvme / kmod-ata-ahci-dwc / kmod-rknpu / GPU / VPU / 风扇温控）、dnsmasq、firewall4、dropbear 等
-- **管理界面底座**（显式列出，缺了进不去后台）：uhttpd、luci、luci-mod-admin-full、防火墙/PPPoE 及中文汉化
-- **GUI 套件**（`with_gui_extras=true` 时）：quickstart、iStore 商店、软件包管理、磁盘管理、ttyd、WoL、UPnP、argon 主题
+- **profile 默认包**（IB 保证）：内核、驱动（kmod-r8169 网卡 / kmod-nvme / kmod-ata-ahci-dwc / kmod-rknpu / 风扇温控）、dnsmasq、firewall4、dropbear 等
+- **管理界面底座**（显式列出，缺了进不去后台）：uhttpd、luci、luci-mod-admin-full、防火墙/PPPoE（ppp/ppp-mod-pppoe/kmod-pppoe 完整拨号链）及中文汉化
+- **GUI 套件**（`with_gui_extras=true` 时）：iStore 商店、软件包管理、ttyd、UPnP、argon 主题（quickstart/diskman 已按需求移除）
+- **容器栈**（`include_docker=true` 时）：docker/dockerd/docker-compose/dockerman 及依赖链
 
 改完 recipe 后 push 即自动重建；构建末尾会对 manifest 逐项断言（管理页必需包必须在、剔除项必须不在、设备驱动包必须在），不满足直接 fail，避免"刷完卡才发现"。
 
@@ -62,6 +66,7 @@
 - `ddns-go / luci-app-ddns-go`：dllkids feed（`https://down.dllkids.xyz/openwrt-feed/25.12/aarch64_generic/`）
 - `luci-app-mosdns` + `geo2txt / v2ray-geoip / v2ray-geosite`：同上 dllkids feed
 - `mosdns` 主程序：dllkids feed 没有，在 ImmortalWrt snapshots（`https://downloads.immortalwrt.org/snapshots/packages/aarch64_generic/packages/`）
+- **mpp/librga 用户态库**（`librockchip_mpp` / `librga`）：IB、dllkids feed、ImmortalWrt 官方仓库都没有现成 apk；社区只有 Debian/glibc 版（如 tsukumijima/librga-rockchip），与本固件 musl 不兼容。内核侧驱动已内置（kmod-rk_vcodec + kmod-rga3），推荐用 Docker 方案：跑自带 mpp/rga 用户态库的容器（如 nyanmisaka 的 jellyfin 镜像），把 `/dev/mpp_service`、`/dev/rga`、`/dev/dri` 映射进容器即可硬解。若要固件原生用户态库，需从 [airockchip/mpp](https://github.com/airockchip/mpp) + [airockchip/librga](https://github.com/airockchip/librga) 源码编译（超出 IB 能力，需完整 SDK）
 
 第三方 .apk 的接入方式：workflow 里加一步下载到 `$IB_DIR/packages/`，IB 构建时会自动 `apk mkndx --allow-untrusted` 重建索引，无需签名。
 
