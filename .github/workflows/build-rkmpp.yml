@@ -14,20 +14,19 @@ name: Build rkmpp/rkrga/ffmpeg-mpp APKs
 # 网络无此问题。所有 feed 包的上游源码都在 GitHub（JeffyCN/mirrors、
 # jjm2473/librga、jjm2473/ffmpeg-rk），runner 下载顺畅。
 #
-# 编译成功后（默认）把 .apk 提交进本仓库 files/rkmpp/，并在同一个 commit
-# 里把运行时包名追加到 recipe/packages-add.txt。该 commit 命中 build.yml
-# 的 push 触发（files/** + recipe/**），固件构建会自动带上这些包 —— build.yml
-# 里的 "Inject locally-built rkmpp packages" 步骤会把 files/rkmpp/*.apk 复制进
-# IB 的 packages/，IB 自动 apk mkndx --allow-untrusted 重建索引，无需签名。
+# 编译成功后把 .apk 上传到本仓库的 GitHub Release（固定 tag: rkmpp-apk，滚动
+# 更新），二进制不进 git 树，方便后续直接复用。build.yml 构建固件时从该
+# Release 拉取 .apk 放进 IB 的 packages/，IB 自动 apk mkndx --allow-untrusted
+# 重建索引，无需签名。运行时包名由本 workflow 追加进 recipe/packages-add.txt。
 #
-# 触发方式：Actions 页面手动 Run workflow（workflow_dispatch）。
+# 触发方式：改动本文件时自动 push 触发，或在 Actions 页面手动 Run workflow。
 # ─────────────────────────────────────────────────────────────
 
 on:
   workflow_dispatch:
     inputs:
       commit_to_repo:
-        description: '编译成功后把 .apk 提交到 files/rkmpp/ 并更新 recipe/packages-add.txt'
+        description: '编译成功后把运行时包名追加进 recipe/packages-add.txt（.apk 一律上传到 Release rkmpp-apk）'
         required: false
         default: true
         type: boolean
@@ -38,12 +37,12 @@ on:
       - '.github/workflows/build-rkmpp.yml'
 
 permissions:
-  contents: write   # 提交 .apk 与 packages-add.txt
+  contents: write   # 创建/上传 Release + 提交 packages-add.txt
   actions: write    # 编译完成后显式 dispatch build.yml 重建固件
 
 concurrency:
   group: build-rkmpp
-  cancel-in-progress: false
+  cancel-in-progress: true   # 推新版本时取消正在跑的旧 run（避免旧逻辑污染仓库）
 
 env:
   SRC_REPO: https://github.com/istoreos/istoreos.git
@@ -212,22 +211,41 @@ jobs:
           path: rkmpp-apk/
           retention-days: 30
 
-      - name: Commit .apk into repo + update packages-add.txt
-        id: commit
+      - name: Publish APKs to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "${{ github.workspace }}"
+          TAG=rkmpp-apk
+          # 固定 tag 的滚动 Release：编译产物只存 Release，不进 git 树，方便后续直接复用。
+          if ! gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "${{ github.repository }}" \
+              --target "${{ github.sha }}" \
+              --title "RK3588 多媒体用户态库 APK（aarch64_generic / musl）" \
+              --notes "由 build-rkmpp.yml 从 iStoreOS ${SRC_BRANCH} 源码 + jjm2473/openwrt-rkmpp feed 交叉编译。build.yml 构建固件时从此 Release 拉取 .apk 注入 ImageBuilder。"
+            echo "已创建 Release $TAG"
+          else
+            echo "Release $TAG 已存在，滚动更新资产"
+          fi
+          # --clobber 覆盖同名旧资产
+          gh release upload "$TAG" rkmpp-apk/*.apk -R "${{ github.repository }}" --clobber
+          echo "----- Release $TAG 资产 -----"
+          gh release view "$TAG" -R "${{ github.repository }}"
+
+      - name: Add rkmpp to packages-add.txt (text only)
         if: ${{ inputs.commit_to_repo != false }}
         run: |
           cd "${{ github.workspace }}"
-          mkdir -p files/rkmpp
-          cp -v rkmpp-apk/*.apk files/rkmpp/
-
-          # 追加运行时包名到 recipe/packages-add.txt（幂等：已存在则跳过）
+          # 只改这个文本文件（告诉 build.yml 固件里要装哪些 rkmpp 包）；
+          # .apk 二进制在 Release 里，不进 git 树。
           ADDFILE="recipe/packages-add.txt"
           if ! grep -q 'RKMPP-MANAGED-BLOCK' "$ADDFILE"; then
             {
               echo ""
               echo "# ── RKMPP-MANAGED-BLOCK ────────────────────────────────"
               echo "# RK3588 多媒体用户态库，由 build-rkmpp.yml 从源码编译，.apk 存于"
-              echo "# files/rkmpp/，build.yml 会注入 IB。下面几行由该 workflow 自动维护。"
+              echo "# GitHub Release（tag: rkmpp-apk），build.yml 构建时拉取注入 IB。"
+              echo "# 下面几行由该 workflow 自动维护。"
             } >> "$ADDFILE"
           fi
           for p in $RUNTIME_PKGS; do
@@ -235,29 +253,26 @@ jobs:
           done
           echo "----- packages-add.txt 末尾 -----"
           tail -12 "$ADDFILE"
-          echo "----- files/rkmpp/ -----"
-          ls -lh files/rkmpp/
-
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B main
-          git add files/rkmpp recipe/packages-add.txt
+          git add recipe/packages-add.txt
           if git diff --cached --quiet; then
-            echo "无变化，跳过提交"
+            echo "packages-add.txt 无变化，跳过提交"
           else
-            git commit -m "rkmpp: 编译入库 rkmpp/rkrga/ffmpeg-mpp 的 aarch64 .apk 并加入固件" -m "由 build-rkmpp.yml run #${{ github.run_number }} 从 iStoreOS ${SRC_BRANCH} 源码 + jjm2473/openwrt-rkmpp feed 交叉编译。files/rkmpp/ 存 .apk，recipe/packages-add.txt 追加运行时包名；此 commit 会自动触发 build.yml 重建固件。"
+            git commit -m "rkmpp: 运行时包名加入固件（.apk 存于 Release rkmpp-apk）" -m "由 build-rkmpp.yml run #${{ github.run_number }} 编译并上传到 Release。本 commit 只改 packages-add.txt，二进制不进 git 树。"
             git pull --rebase origin main
             git push origin HEAD
-            echo "pushed=true" >> "$GITHUB_OUTPUT"
-            echo "✅ 已提交并推送"
+            echo "✅ packages-add.txt 已更新"
           fi
 
       - name: Trigger firmware rebuild (build.yml)
-        if: ${{ steps.commit.outputs.pushed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 用 GITHUB_TOKEN 推送的 commit 不会触发其它 workflow（GitHub 防递归），
-          # 所以这里用 actions:write 权限显式 workflow_dispatch 触发 build.yml，
-          # 让它把刚入库的 files/rkmpp/*.apk 注入 IB、重建带 rkmpp 的固件。
+          # 所以显式 workflow_dispatch 触发 build.yml，让它从 Release rkmpp-apk
+          # 拉取 .apk 注入 IB、重建带 rkmpp 的固件。
           curl -sSL -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
