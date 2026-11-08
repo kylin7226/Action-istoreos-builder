@@ -177,13 +177,34 @@ jobs:
       - name: Compile rkmpp / rkrga / ffmpeg-mpp packages
         run: |
           cd "$SRC"
-          # 定向编译三个 feed 目录即可产出全部 7 个 .apk；buildroot 会自动
-          # 先编译它们选中的依赖（libx264/gnutls/opus/lame/fdk-aac/alsa-lib/
-          # libdrm/rkmpp/rkrga 等），不会去构建 busybox/dropbear 等无关默认包。
+          # 定向编译三个 feed 目录即可产出全部 7 个 .apk。已核对 buildroot 的
+          # tmp/.packagedeps：ffmpeg-mpp/compile 的前置包含 fdk-aac/gnutls/libdrm/
+          # libx264/opus/rkmpp/rkrga/zlib/bzip2/lame(+alsa-lib)，gnutls 又拉起
+          # nettle/gmp/libtasn1/p11-kit，所以依赖闭包会被自动构建，且不会去碰
+          # busybox/kmod 等默认包（那些需要内核，会拖慢甚至失败）。
+          LOG="$RUNNER_TEMP/compile.log"
+          set +e
           make -j"$(nproc)" \
             package/feeds/rkmpp/rkmpp/compile \
             package/feeds/rkmpp/rkrga/compile \
-            package/feeds/rkmpp/ffmpeg-mpp/compile
+            package/feeds/rkmpp/ffmpeg-mpp/compile 2>&1 | tee "$LOG"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "===== 编译失败 rc=$rc ====="
+            echo "----- 失败的 package 目标 -----"; grep -nE "\*\*\* \[package/|\*\*\* \[.*compile\]" "$LOG" | tail -15
+            echo "----- 编译/链接错误 -----"; grep -nE "error:|cannot find -l|undefined reference|fatal error|configure: error|No rule to make target|No such file or directory|collect2" "$LOG" | tail -30
+            echo "----- 日志末尾 40 行 -----"; tail -40 "$LOG"
+            # 把关键错误写成 ::error:: annotation —— 未认证也能通过 public
+            # check-run annotations API 远程读到，用于定位失败的包与根因
+            { grep -E "\*\*\* \[package/" "$LOG" | tail -4
+              grep -E "error:|cannot find -l|undefined reference|fatal error|configure: error|No rule to make target|collect2" "$LOG" | tail -6; } \
+              | sed 's/%/%25/g' | while IFS= read -r l; do
+                  [ -n "$l" ] && printf '::error::%s\n' "$l"
+                done
+            exit "$rc"
+          fi
+          echo "✅ 编译成功"
 
       - name: Collect .apk artifacts
         run: |
