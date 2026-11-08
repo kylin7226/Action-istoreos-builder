@@ -23,12 +23,14 @@ etherwake
 # 1) 天然不在本镜像里（IB 构建起点就精简，无需剔除）：
 #    各类 x86/无线固件(iwlwifi/amdgpu/i915…)、ath 系列无线驱动、
 #    3G/4G 拨号(comgt/chat)、ddns-scripts、ddnsto、avahi、NAS/打印机等 300+ 项
-# 2) 是保留包的硬依赖，apk 不允许剔除（剔了构建直接失败或破坏功能）：
-#    kmod-drm            ← kmod-rknpu（NPU 驱动，profile 默认包）
-#    luci-theme-bootstrap ← luci-light
-#    smartmontools/smartd/smartmontools-drivedb/mdadm/kmod-md-raid0/1/10
-#                        ← quickstart、luci-app-diskman
-#    （若愿放弃 quickstart/diskman 门面可再删这批，属产品取舍，暂不动）
+# 2) 曾为硬依赖、现已随 quickstart/diskman 一并移除（2026-11 精简决策）：
+#    kmod-drm 仍保留 ← kmod-rknpu（NPU 驱动，profile 默认包）
+#    luci-theme-bootstrap 仍保留 ← luci-light
+#    smartmontools/smartd/smartmontools-drivedb/mdadm/kmod-md-raid0/1/10/parted
+#      只被 quickstart、luci-app-diskman 引用；这两个门面已从基线列表移除，
+#      整条依赖链自动消失，无需负号项。istoreos-files 与 luci-app-store
+#      不依赖 quickstart（已核实），予以保留。
+#    若将来重新引入 quickstart/diskman，上述依赖会跟着回来。
 # 3) 容器栈按需求全部保留，不删：
 #    docker/dockerd/containerd/runc/docker-compose/tini/dockerman×2
 #    及其内核模块（kmod-br-netfilter、kmod-nf-ipvs* 等）
