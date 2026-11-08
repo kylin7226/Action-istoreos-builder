@@ -107,6 +107,30 @@ jobs:
             exit 1
           fi
 
+      - name: Inject third-party feed packages into IB
+        run: |
+          # dllkids feed 里的包 IB 本地仓库没有，下载 .apk 放进 packages/，
+          # IB 构建时会 apk mkndx --allow-untrusted 自动重建索引。
+          # 要注入哪些包由 recipe/packages-add.txt 决定（这里只处理已知的映射）。
+          cd "$IB_DIR"
+          FEED="https://down.dllkids.xyz/openwrt-feed/25.12/aarch64_generic"
+          ADD="$(grep -v '^\s*#' "${{ github.workspace }}/recipe/packages-add.txt" | grep -v '^\s*$' || true)"
+          LIST=$(curl -fsSL --retry 3 "$FEED/")
+          inject() {  # $1 = 文件名匹配前缀（避免 ddns-go 匹配到 luci-app-ddns-go）
+            F=$(echo "$LIST" | grep -oE "$1[0-9][^\"<>]*\.apk" | sort -u | tail -1)
+            if [ -z "$F" ]; then echo "❌ feed 里找不到 $1*"; exit 1; fi
+            echo "下载 $F"
+            curl -fsSL --retry 3 -o "packages/$F" "$FEED/$F"
+            ls -lh "packages/$F"
+          }
+          echo "$ADD" | grep -qx "ddns-go" && inject "ddns-go-"
+          echo "$ADD" | grep -qx "luci-app-ddns-go" && inject "luci-app-ddns-go-"
+          echo "$ADD" | grep -qx "luci-app-mosdns" && inject "luci-app-mosdns-"
+          echo "$ADD" | grep -qx "geo2txt" && inject "geo2txt-"
+          echo "$ADD" | grep -qx "v2ray-geoip" && inject "v2ray-geoip-"
+          echo "$ADD" | grep -qx "v2ray-geosite" && inject "v2ray-geosite-"
+          exit 0
+
       - name: Compose package list (base + recipe)
         id: pkgs
         run: |

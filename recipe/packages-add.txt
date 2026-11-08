@@ -15,3 +15,8 @@
 # 注意：写错包名会让构建失败（no such package）。
 # 当前为空 = 不追加任何包。
 # ─────────────────────────────────────────────────────────────
+
+# DDNS-GO：自动把公网 IP 更新到域名服务商（阿里/腾讯/DNSPod/Cloudflare…），
+# 自带网页界面（默认端口 9876）。apk 由 workflow 从 dllkids feed 注入。
+ddns-go
+luci-app-ddns-go
