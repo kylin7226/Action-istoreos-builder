@@ -203,7 +203,10 @@ jobs:
           # busybox/kmod 等默认包（那些需要内核，会拖慢甚至失败）。
           LOG="$RUNNER_TEMP/compile.log"
           set +e
-          make -j1 V=s \
+          # stdbuf -oL 关闭 stdout 块缓冲：否则 `2>&1 | tee` 会把 stderr 的
+          # "*** Error" 级联先刷出、stdout 的 V=s 命令回显后刷出，日志乱序，
+          # tail 只看到最后成功的包而看不到真正报错。行缓冲后顺序正确。
+          stdbuf -oL -eL make -j"$(nproc)" V=s \
             package/feeds/rkmpp/rkmpp/compile \
             package/feeds/rkmpp/rkrga/compile \
             package/feeds/rkmpp/ffmpeg-mpp/compile 2>&1 | tee "$LOG"
@@ -211,15 +214,25 @@ jobs:
           set -e
           if [ "$rc" -ne 0 ]; then
             echo "===== 编译失败 rc=$rc ====="
-            # 把完整日志存成 artifact（web UI 可下载），同时把末尾 60 行原始日志
-            # 逐行写成 ::error:: annotation —— 未认证也能通过 public check-run
-            # annotations API 远程读到，精确定位失败的包与根因。
-            # 用 -j1 V=s 让失败点串行、带完整命令，tail 一定覆盖真正的错误。
             mkdir -p "${{ github.workspace }}/rkmpp-logs"
             cp -v "$LOG" "${{ github.workspace }}/rkmpp-logs/compile.log"
-            tail -60 "$LOG" | sed 's/%/%25/g; s/\r/%0D/g' | while IFS= read -r l; do
-              [ -n "$l" ] && printf '::error::%s\n' "$l"
-            done
+            # 全日志搜错误（不靠 tail，避免缓冲乱序漏掉）。先找 buildroot 的
+            # "*** [package/.../compile] Error" 级联定位失败的包，再打印它前面
+            # 60 行真正的编译/configure 报错上下文。
+            echo "----- 失败的 package 目标 -----"; grep -nE "\*\*\* \[package/" "$LOG" | tail -20
+            FAILLINE=$(grep -nE "\*\*\* \[package/" "$LOG" | head -1 | cut -d: -f1)
+            if [ -n "$FAILLINE" ]; then
+              S=$(( FAILLINE > 70 ? FAILLINE - 70 : 1 ))
+              echo "----- 失败点上下文（行 $S..$FAILLINE）-----"
+              sed -n "${S},${FAILLINE}p" "$LOG"
+            fi
+            echo "----- 其它错误关键字 -----"; grep -nE ": error:|fatal error|configure: error|No rule to make target|cannot find -l|undefined reference|collect2|Package .* not found|error: " "$LOG" | tail -25
+            # annotation 有数量上限，只发最关键的：失败的 package 目标 + 编译错误行
+            { grep -E "\*\*\* \[package/" "$LOG" | tail -3
+              grep -E ": error:|fatal error|configure: error|No rule to make target|cannot find -l|undefined reference|collect2|Package .* not found" "$LOG" | tail -8; } \
+              | sed 's/%/%25/g; s/\r/%0D/g' | while IFS= read -r l; do
+                  [ -n "$l" ] && printf '::error::%s\n' "$l"
+                done
             exit "$rc"
           fi
           echo "✅ 编译成功"
