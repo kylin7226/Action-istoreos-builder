@@ -231,12 +231,42 @@ jobs:
       - name: Build image
         run: |
           cd "$IB_DIR"
-          make -j$(nproc) image \
+          LOG="$RUNNER_TEMP/build-image.log"
+          set +e
+          # stdbuf 行缓冲保序，避免 `2>&1 | tee` 把 stderr 的报错和 stdout 回显乱序
+          stdbuf -oL -eL make -j$(nproc) image \
             PROFILE="${PROFILE}" \
             PACKAGES="${{ steps.pkgs.outputs.packages }}" \
             FILES="${{ runner.temp }}/files-overlay" \
             ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}" \
-            CONFIG_TARGET_ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}"
+            CONFIG_TARGET_ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}" 2>&1 | tee "$LOG"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "===== make image 失败 rc=$rc ====="
+            mkdir -p "${{ github.workspace }}/build-logs"
+            cp -v "$LOG" "${{ github.workspace }}/build-logs/build-image.log"
+            # 最常见失败：apk 无法解析包/依赖（rkmpp 系列的用户态依赖 gnutls/libx264/
+            # opus/fdk-aac/lame/libdrm 等可能不在 IB 仓库里）。抓这些关键行。
+            echo "----- apk / 依赖 / 包缺失相关 -----"; grep -nE "ERROR:|unable to|not found|no such|unresolved|depends on|requires|cannot install|bad.*apk|UNTRUSTED|signature|mkndx|Package .* is" "$LOG" | tail -40
+            echo "----- make 级联错误 -----"; grep -nE "\*\*\* |Error [0-9]+|make\[[0-9]\]" "$LOG" | tail -20
+            # annotation 有数量上限，只发最关键行（转义 % 和 \r）
+            { grep -E "ERROR:|unable to|not found|unresolved|cannot install|UNTRUSTED|signature" "$LOG" | tail -8
+              grep -E "\*\*\* |Error [0-9]+" "$LOG" | tail -4; } \
+              | sed 's/%/%25/g; s/\r/%0D/g' | while IFS= read -r l; do
+                  [ -n "$l" ] && printf '::error::%s\n' "$l"
+                done
+            exit "$rc"
+          fi
+          echo "✅ make image 成功"
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-image-log
+          path: build-logs/
+          retention-days: 14
 
       - name: Collect artifacts
         run: |
