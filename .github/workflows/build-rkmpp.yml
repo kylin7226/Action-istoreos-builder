@@ -149,18 +149,21 @@ jobs:
           # rkmpp/rkrga/ffmpeg-mpp 都是用户态库，不依赖任何 kmod，编译前把所有
           # kmod-* 关掉即可（其 firmware 依赖如 r8169-firmware/linux-firmware 也随之掉，
           # 顺带省掉大量无谓构建）。关掉后不再跑 defconfig，否则会被重新设回 =y。
-          KM=$(grep -E '^CONFIG_PACKAGE_kmod-.*=[ym]' .config | sed -E 's/^CONFIG_PACKAGE_(kmod-[^=]*)=[ym]/\1/')
-          if [ -n "$KM" ]; then
-            echo "----- 关闭以下内核模块包 -----"
-            echo "$KM" | sed 's/^/  /'
-            echo "$KM" | while read -r s; do ./scripts/config --disable "PACKAGE_$s"; done
-          fi
+          # 注意：OpenWrt 的 scripts/config 是「目录」不是可执行文件（真正的 kconfig
+          # 二进制是 scripts/config/conf，且只支持 defconfig/oldconfig 等整体模式，
+          # 没有 --disable 单符号选项）。所以直接用 sed 把 .config 里的 kmod 行改成
+          # 标准的「# CONFIG_x is not set」形式——build 期间的 syncconfig 会保留该值，
+          # 只有 defconfig 才会按 target 默认重新设回 =y，而我们不再跑 defconfig。
+          echo "----- 关闭前选中的内核模块包 -----"
+          grep -E '^CONFIG_PACKAGE_kmod-.*=[ym]' .config | sed 's/^/  /' || echo "  (无)"
+          sed -i -E 's/^CONFIG_PACKAGE_(kmod-[^=]*)=[ym]/# CONFIG_PACKAGE_\1 is not set/' .config
           # 顺带关掉 rockchip target 默认的用户态工具（编译用户态库用不到，省时间）
-          for s in uboot-envtools partx-utils e2fsprogs mkf2fs ethtool; do
-            ./scripts/config --disable "PACKAGE_$s" 2>/dev/null || true
-          done
+          sed -i -E 's/^CONFIG_PACKAGE_(uboot-envtools|partx-utils|e2fsprogs|mkf2fs|ethtool)=[ym]/# CONFIG_PACKAGE_\1 is not set/' .config
           echo "----- 确认无内核模块被选中（应为空）-----"
-          grep -E '^CONFIG_PACKAGE_kmod-.*=[ym]' .config && { echo "❌ 仍有 kmod 被选中"; exit 1; } || echo "  ✅ 无 kmod"
+          if grep -qE '^CONFIG_PACKAGE_kmod-.*=[ym]' .config; then
+            echo "❌ 仍有 kmod 被选中："; grep -E '^CONFIG_PACKAGE_kmod-.*=[ym]' .config; exit 1
+          fi
+          echo "  ✅ 无 kmod"
           echo "----- 目标包选中情况 -----"
           grep -E 'CONFIG_PACKAGE_(rkmpp|rkrga|ffmpeg-mpp|ffprobe-mpp|libffmpeg-mpp)(-demo)?=' .config || true
 
@@ -226,9 +229,8 @@ jobs:
           # busybox/kmod 等默认包（那些需要内核，会拖慢甚至失败）。
           LOG="$RUNNER_TEMP/compile.log"
           # 防御：toolchain/install 等步骤若触发了自动 defconfig，可能把 target/device
-          # 默认的 kmod-* 重新设回 =y。编译前再关一次（幂等），确保不会去建内核模块。
-          grep -E '^CONFIG_PACKAGE_kmod-.*=[ym]' .config | sed -E 's/^CONFIG_PACKAGE_(kmod-[^=]*)=[ym]/\1/' \
-            | while read -r s; do ./scripts/config --disable "PACKAGE_$s"; done
+          # 默认的 kmod-* 重新设回 =y。编译前再用 sed 关一次（幂等），确保不会去建内核模块。
+          sed -i -E 's/^CONFIG_PACKAGE_(kmod-[^=]*)=[ym]/# CONFIG_PACKAGE_\1 is not set/' .config
           set +e
           # stdbuf -oL 关闭 stdout 块缓冲：否则 `2>&1 | tee` 会把 stderr 的
           # "*** Error" 级联先刷出、stdout 的 V=s 命令回显后刷出，日志乱序，
