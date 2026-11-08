@@ -131,6 +131,19 @@ jobs:
           echo "$ADD" | grep -qx "v2ray-geosite" && inject "v2ray-geosite-"
           exit 0
 
+      - name: Inject locally-built rkmpp packages into IB
+        run: |
+          # files/rkmpp/ 里是由 build-rkmpp.yml 用 iStoreOS 25.12 源码 +
+          # jjm2473/openwrt-rkmpp feed 交叉编译好的 .apk（rkmpp/rkrga/ffmpeg-mpp
+          # 及 demo）。IB 和任何公开二进制仓库都没有这些用户态库，所以编译一次
+          # 直接入库。IB 构建时会自动 apk mkndx --allow-untrusted 重建索引。
+          cd "$IB_DIR"
+          if ls "${{ github.workspace }}"/files/rkmpp/*.apk >/dev/null 2>&1; then
+            cp -v "${{ github.workspace }}"/files/rkmpp/*.apk packages/
+          else
+            echo "files/rkmpp/ 里没有 .apk，跳过（rkmpp 系列包若在 add 列表会导致构建失败）"
+          fi
+
       - name: Compose package list (base + recipe)
         id: pkgs
         run: |
