@@ -86,10 +86,13 @@ jobs:
           python3 -c 'import elftools; print("pyelftools", elftools.__version__)'
 
       - name: Clone iStoreOS source (${{ env.SRC_BRANCH }})
-        working-directory: ${{ runner.temp }}
         run: |
-          git clone --depth 1 --branch "$SRC_BRANCH" "$SRC_REPO" istoreos
-          cd istoreos
+          # 克隆到 workspace 下的固定路径 openwrt/（而非 runner.temp 的随机路径），
+          # 因为 buildroot 会把 SRC 的绝对路径写进 toolchain 的 RPATH/配置里；路径
+          # 稳定后，下面 actions/cache 恢复的 toolchain 才能直接复用，省掉 ~48min 重建。
+          cd "${{ github.workspace }}"
+          git clone --depth 1 --branch "$SRC_BRANCH" "$SRC_REPO" openwrt
+          cd openwrt
           echo "SRC=$PWD" >> "$GITHUB_ENV"
           echo "源码 commit: $(git rev-parse --short HEAD)  ($(git log -1 --format=%cd))"
           git config --global --add safe.directory "$PWD"
@@ -167,6 +170,22 @@ jobs:
           cd "$SRC"
           make -j1 prereq V=s 2>&1 | tail -60
 
+      - name: Cache toolchain & build dirs
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          # 缓存交叉工具链和已下载源码，命中后可跳过 ~48min 的 toolchain/install。
+          # 路径都在固定的 $SRC(=workspace/openwrt) 下，绝对路径稳定，RPATH 不会失效。
+          path: |
+            ${{ github.workspace }}/openwrt/staging_dir/toolchain-*
+            ${{ github.workspace }}/openwrt/build_dir/toolchain-*
+            ${{ github.workspace }}/openwrt/dl
+            ${{ github.workspace }}/openwrt/staging_dir/host
+            ${{ github.workspace }}/openwrt/build_dir/host
+          key: tc-${{ runner.os }}-${{ hashFiles(format('{0}/.config', github.workspace)) }}-${{ env.SRC_BRANCH }}
+          restore-keys: |
+            tc-${{ runner.os }}-
+
       - name: Build toolchain
         run: |
           cd "$SRC"
@@ -184,7 +203,7 @@ jobs:
           # busybox/kmod 等默认包（那些需要内核，会拖慢甚至失败）。
           LOG="$RUNNER_TEMP/compile.log"
           set +e
-          make -j"$(nproc)" \
+          make -j1 V=s \
             package/feeds/rkmpp/rkmpp/compile \
             package/feeds/rkmpp/rkrga/compile \
             package/feeds/rkmpp/ffmpeg-mpp/compile 2>&1 | tee "$LOG"
@@ -192,19 +211,26 @@ jobs:
           set -e
           if [ "$rc" -ne 0 ]; then
             echo "===== 编译失败 rc=$rc ====="
-            echo "----- 失败的 package 目标 -----"; grep -nE "\*\*\* \[package/|\*\*\* \[.*compile\]" "$LOG" | tail -15
-            echo "----- 编译/链接错误 -----"; grep -nE "error:|cannot find -l|undefined reference|fatal error|configure: error|No rule to make target|No such file or directory|collect2" "$LOG" | tail -30
-            echo "----- 日志末尾 40 行 -----"; tail -40 "$LOG"
-            # 把关键错误写成 ::error:: annotation —— 未认证也能通过 public
-            # check-run annotations API 远程读到，用于定位失败的包与根因
-            { grep -E "\*\*\* \[package/" "$LOG" | tail -4
-              grep -E "error:|cannot find -l|undefined reference|fatal error|configure: error|No rule to make target|collect2" "$LOG" | tail -6; } \
-              | sed 's/%/%25/g' | while IFS= read -r l; do
-                  [ -n "$l" ] && printf '::error::%s\n' "$l"
-                done
+            # 把完整日志存成 artifact（web UI 可下载），同时把末尾 60 行原始日志
+            # 逐行写成 ::error:: annotation —— 未认证也能通过 public check-run
+            # annotations API 远程读到，精确定位失败的包与根因。
+            # 用 -j1 V=s 让失败点串行、带完整命令，tail 一定覆盖真正的错误。
+            mkdir -p "${{ github.workspace }}/rkmpp-logs"
+            cp -v "$LOG" "${{ github.workspace }}/rkmpp-logs/compile.log"
+            tail -60 "$LOG" | sed 's/%/%25/g; s/\r/%0D/g' | while IFS= read -r l; do
+              [ -n "$l" ] && printf '::error::%s\n' "$l"
+            done
             exit "$rc"
           fi
           echo "✅ 编译成功"
+
+      - name: Upload compile log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rkmpp-compile-log
+          path: rkmpp-logs/
+          retention-days: 14
 
       - name: Collect .apk artifacts
         run: |
