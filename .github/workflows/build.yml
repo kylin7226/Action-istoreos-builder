@@ -137,12 +137,36 @@ jobs:
         run: |
           # rkmpp/rkrga/ffmpeg-mpp 的 .apk 由 build-rkmpp.yml 从源码编译，存于本
           # 仓库 Release（tag: rkmpp-apk），不进 git 树。这里从 Release 拉取放进
-          # IB 的 packages/，IB 会自动 apk mkndx --allow-untrusted 重建索引。
+          # IB 的 packages/，IB 的 package_reload 会 apk mkndx 自动重建并签名索引。
           cd "$IB_DIR"
           TAG=rkmpp-apk
           if gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
             gh release download "$TAG" -R "${{ github.repository }}" --pattern '*.apk' --dir packages/ --clobber
-            echo "----- 注入的 rkmpp 系列 apk -----"
+            # ── 关键修复（run #14/#15 根因）──
+            # GitHub Release 把 .apk 文件名里版本号的 `~` 换成了 `.`：
+            #   真实包版本 rkmpp-2023.06.12~f91f152a-r2 → 资产名 ...2023.06.12.f91f152a-r2.apk
+            #   libffmpeg-mpp-5.1~20260910-r1          → 资产名 ...5.1.20260910-r1.apk
+            # 而 apk 安装时按索引里的真实版本重建文件名 `<name>-<version>.apk`（带 ~）
+            # 去 packages/ 找文件，`.`≠`~` → 报 "package mentioned in index not found
+            # (try 'apk update')"，package_install Error 4，make image Error 2。
+            # （IB 自带的 libx264-...~...apk 保留 ~ 所以正常。）
+            # 修法：用 IB 自带 apk 逐个读 .apk 内部真实的 name/version，把文件名改回带 ~。
+            # 只改文件名、不重建 packages.adb —— IB 的 package_reload 检测到文件变新会
+            # 自己 mkndx 重建并用本地密钥签名（CONFIG_SIGNATURE_CHECK=y），无需我们插手。
+            APK=staging_dir/host/bin/apk
+            echo "----- 修正 .apk 文件名（. → ~）-----"
+            for f in packages/rkmpp-*.apk packages/rkrga-*.apk \
+                     packages/ffmpeg-mpp-*.apk packages/ffprobe-mpp-*.apk packages/libffmpeg-mpp-*.apk; do
+              [ -e "$f" ] || continue
+              meta=$("$APK" adbdump "$f" 2>/dev/null)
+              name=$(printf '%s\n' "$meta" | awk '/^  name: /{print $2; exit}')
+              ver=$(printf '%s\n'  "$meta" | awk '/^  version: /{print $2; exit}')
+              want="packages/${name}-${ver}.apk"
+              if [ -n "$name" ] && [ -n "$ver" ] && [ "$f" != "$want" ]; then
+                mv -v "$f" "$want"
+              fi
+            done
+            echo "----- 注入的 rkmpp 系列 apk（文件名已修正）-----"
             ls -lh packages/ | grep -iE 'rkmpp|rkrga|ffmpeg' || true
             echo "✅ 已从 Release $TAG 注入"
           else
