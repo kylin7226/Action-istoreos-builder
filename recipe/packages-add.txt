@@ -50,3 +50,19 @@ luci-i18n-nfs-zh-cn
 nfs-kernel-server
 nfs-kernel-server-utils
 nfs-utils
+
+# ── RKMPP-MANAGED-BLOCK ────────────────────────────────
+# RK3588 多媒体用户态库，由 build-rkmpp.yml 从源码编译，.apk 存于
+# GitHub Release（tag: rkmpp-apk），build.yml 构建时拉取注入 IB。
+# 与上面已装的内核驱动 kmod-rk_vcodec(VPU) / kmod-rga3(RGA) 配套。
+#   rkmpp          librockchip_mpp（VPU 用户态库）
+#   rkrga          librga（RGA 2D 加速用户态库）
+#   libffmpeg-mpp  带 MPP+RGA 硬件加速的 ffmpeg 库
+#   ffmpeg-mpp     ffmpeg 命令行
+#   ffprobe-mpp    ffprobe 命令行
+# 下面几行由 build-rkmpp.yml 自动维护（也可手动增删）。
+rkmpp
+rkrga
+libffmpeg-mpp
+ffmpeg-mpp
+ffprobe-mpp
