@@ -11,5 +11,25 @@
 #     按需把要删的包名抄到下面即可。
 #   - 剔除结果会在构建后的 manifest 校验步骤里逐项断言（应删未删 = 构建失败）
 #
-# 当前为空 = 不剔除任何包。
+# 当前生效的剔除项（参考 bluise/istoreos 精简清单，按本镜像实际依赖筛选）：
+#
+# WoL 网络唤醒三件套 —— 桌面/服务器场景用不上，workflow 基线列表也已同步去掉，
+# 这里保留负号项做双保险（防止基线改动后回归）。
+luci-i18n-wol-zh-cn
+luci-app-wol
+etherwake
+#
+# ── bluise 清单里其余项的处理结论（2026-11 分析）──
+# 1) 天然不在本镜像里（IB 构建起点就精简，无需剔除）：
+#    各类 x86/无线固件(iwlwifi/amdgpu/i915…)、ath 系列无线驱动、
+#    3G/4G 拨号(comgt/chat)、ddns-scripts、ddnsto、avahi、NAS/打印机等 300+ 项
+# 2) 是保留包的硬依赖，apk 不允许剔除（剔了构建直接失败或破坏功能）：
+#    kmod-drm            ← kmod-rknpu（NPU 驱动，profile 默认包）
+#    luci-theme-bootstrap ← luci-light
+#    smartmontools/smartd/smartmontools-drivedb/mdadm/kmod-md-raid0/1/10
+#                        ← quickstart、luci-app-diskman
+#    （若愿放弃 quickstart/diskman 门面可再删这批，属产品取舍，暂不动）
+# 3) 容器栈按需求全部保留，不删：
+#    docker/dockerd/containerd/runc/docker-compose/tini/dockerman×2
+#    及其内核模块（kmod-br-netfilter、kmod-nf-ipvs* 等）
 # ─────────────────────────────────────────────────────────────
