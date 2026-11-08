@@ -4,34 +4,111 @@
 #
 # 说明：
 #   - IB 的 PACKAGES= 是「profile 默认包 + 追加」语义，负号项做剔除
+#   - 负号项指向不存在的包是安全的空操作（已实测），因此下面大量
+#     「防御性剔除」条目当前并不在镜像里，它们的作用是：将来官方 IB
+#     更新若把这些包加进 profile 默认包，构建会自动把它们踢掉
 #   - 只能剔除"可选包"；被其他包硬依赖的包剔不掉（apk 会报错）
-#   - 精简思路可参考 bluise/istoreos 的 recipe/remove-packages.txt
-#     （330 项，针对官方 x86 完整镜像）。本项目走 IB 构建，起点只有
-#     profile 默认包 + 基线 LuCI 套件，绝大多数精简项天然就不在镜像里，
-#     按需把要删的包名抄到下面即可。
 #   - 剔除结果会在构建后的 manifest 校验步骤里逐项断言（应删未删 = 构建失败）
-#
-# 当前生效的剔除项（参考 bluise/istoreos 精简清单，按本镜像实际依赖筛选）：
-#
-# WoL 网络唤醒三件套 —— 桌面/服务器场景用不上，workflow 基线列表也已同步去掉，
-# 这里保留负号项做双保险（防止基线改动后回归）。
+# ─────────────────────────────────────────────────────────────
+
+# ── 已从基线移除、负号双保险：WoL 网络唤醒 ──
 luci-i18n-wol-zh-cn
 luci-app-wol
 etherwake
-#
-# ── bluise 清单里其余项的处理结论（2026-11 分析）──
-# 1) 天然不在本镜像里（IB 构建起点就精简，无需剔除）：
-#    各类 x86/无线固件(iwlwifi/amdgpu/i915…)、ath 系列无线驱动、
-#    3G/4G 拨号(comgt/chat)、ddns-scripts、ddnsto、avahi、NAS/打印机等 300+ 项
-# 2) 曾为硬依赖、现已随 quickstart/diskman 一并移除（2026-11 精简决策）：
-#    kmod-drm 仍保留 ← kmod-rknpu（NPU 驱动，profile 默认包）
-#    luci-theme-bootstrap 仍保留 ← luci-light
-#    smartmontools/smartd/smartmontools-drivedb/mdadm/kmod-md-raid0/1/10/parted
-#      只被 quickstart、luci-app-diskman 引用；这两个门面已从基线列表移除，
-#      整条依赖链自动消失，无需负号项。istoreos-files 与 luci-app-store
-#      不依赖 quickstart（已核实），予以保留。
-#    若将来重新引入 quickstart/diskman，上述依赖会跟着回来。
-# 3) 容器栈按需求全部保留，不删：
-#    docker/dockerd/containerd/runc/docker-compose/tini/dockerman×2
-#    及其内核模块（kmod-br-netfilter、kmod-nf-ipvs* 等）
+
+# ── 防御性剔除（当前镜像本来就没有；设备无以下硬件/需求）──
+
+# 3G/4G/5G 蜂窝拨号（设备无 WWAN 模块）
+chat
+comgt
+comgt-directip
+comgt-ncm
+kmod-usb-net-qmi-wwan
+kmod-usb-serial
+kmod-usb-serial-ark3116
+kmod-usb-serial-belkin
+kmod-usb-serial-ch341
+kmod-usb-serial-cp210x
+kmod-usb-serial-cypress-m8
+kmod-usb-serial-dmx_usb_module
+kmod-usb-serial-edgeport
+kmod-usb-serial-ftdi
+kmod-usb-serial-garmin
+kmod-usb-serial-ipw
+kmod-usb-serial-keyspan
+kmod-usb-serial-mct
+kmod-usb-serial-mos7720
+kmod-usb-serial-mos7840
+kmod-usb-serial-option
+kmod-usb-serial-oti6858
+kmod-usb-serial-pl2303
+kmod-usb-serial-qualcomm
+kmod-usb-serial-sierrawireless
+kmod-usb-serial-simple
+kmod-usb-serial-ti-usb
+kmod-usb-serial-visor
+kmod-usb-serial-wwan
+luci-proto-3g
+luci-proto-mbim
+luci-proto-ncm
+luci-proto-qmi
+usb-modeswitch
+
+# 旧版 DDNS（已用 ddns-go 替代）与 ddnsto 内网穿透
+ddns-scripts
+ddns-scripts-cloudflare
+ddns-scripts-dnspod
+ddns-scripts-services
+ddns-scripts_aliyun
+ddnsto
+luci-app-ddnsto
+
+# avahi（mDNS，无发现类服务需求）
+avahi-autoipd
+avahi-dbus-daemon
+avahi-utils
+
+# NAS 文件共享 / 打印机（无此需求）
+cifsmount
+samba4-libs
+samba4-server
+wsdd2
+
+# 无线驱动与固件（设备无 WiFi）
+kmod-ath
+kmod-ath10k
+kmod-ath11k
+kmod-ath11k-pci
+kmod-ath12k
+
+# x86/其他平台显卡与无线固件（RK3588 用不到）
+amdgpu-firmware
+bnx2x-firmware
+edgeport-firmware
+i915-firmware
+i915-firmware-dmc
+i915-firmware-guc
+i915-firmware-huc
+ivpu-firmware
+iwlwifi-firmware-ax101
+iwlwifi-firmware-ax200
+iwlwifi-firmware-ax201
+iwlwifi-firmware-ax210
+iwlwifi-firmware-ax211
+iwlwifi-firmware-ax411
+iwlwifi-firmware-be200
+iwlwifi-firmware-iwl8265
+
+# ─────────────────────────────────────────────────────────────
+# 分析记录（2026-11，对照 bluise/istoreos remove-packages.txt 330 项）：
+# 1) 其余 ~250 项（x86 固件全家族、mt76/brcm 无线、NAS/打印周边等）
+#    与本镜像生态无关且名字随上游版本漂移，不逐一列出；IB 构建起点
+#    只有 profile 默认包 + 基线列表，天然不会引入。
+# 2) bluise 清单与当前镜像的真实交集仅剩：容器栈 8 项（按需求保留）、
+#    kmod-drm（← kmod-rknpu NPU 硬依赖）、luci-theme-bootstrap
+#    （← luci-light 硬依赖）——均不可删。
+# 3) quickstart/diskman 门面已直接从 workflow 基线列表移除（连带
+#    smartmontools/mdadm/kmod-md-raid*/parted 依赖链自动消失）；
+#    kmod-lib-raid6 因 containerd → btrfs-progs → kmod-fs-btrfs
+#    依赖链保留，属容器栈一部分。
 # ─────────────────────────────────────────────────────────────
