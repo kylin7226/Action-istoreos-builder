@@ -40,6 +40,7 @@ on:
     branches: [main, master]
     paths:
       - 'recipe/**'
+      - 'files/**'
       - '.github/workflows/build.yml'
   schedule:
     - cron: '23 3 1 * *'
@@ -164,12 +165,12 @@ jobs:
           echo "最终 PACKAGES："
           echo "$P" | tr ' ' '\n' | sed 's/^/  /'
 
-      - name: Prepare files overlay (LAN IP)
+      - name: Prepare files overlay (LAN IP + repo files/)
         run: |
           # cyber3588-aib 的网口定义（LAN=eth1、WAN=eth0）官方 base-files
           # 已内置，无需覆盖 /etc/config/network。这里只用一个 uci-defaults
           # 脚本在首次启动时把 LAN 地址改成自定义值，其余全部沿用官方默认。
-          FILES="${{ github.workspace }}/files"
+          FILES="${{ runner.temp }}/files-overlay"
           mkdir -p "$FILES/etc/uci-defaults"
           LAN_IP="${{ inputs.lan_ip || '192.168.199.1' }}"
           cat > "$FILES/etc/uci-defaults/99-lan-ip" <<EOF
@@ -179,6 +180,10 @@ jobs:
           exit 0
           EOF
           chmod 755 "$FILES/etc/uci-defaults/99-lan-ip"
+          # 合并仓库自带的 files/（如 apk 第三方 feed 的仓库配置与签名公钥）
+          if [ -d "${{ github.workspace }}/files" ]; then
+            cp -a "${{ github.workspace }}/files/." "$FILES/"
+          fi
           find "$FILES" -type f
 
       - name: Build image
@@ -187,7 +192,7 @@ jobs:
           make -j$(nproc) image \
             PROFILE="${PROFILE}" \
             PACKAGES="${{ steps.pkgs.outputs.packages }}" \
-            FILES="${{ github.workspace }}/files" \
+            FILES="${{ runner.temp }}/files-overlay" \
             ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}" \
             CONFIG_TARGET_ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}"
 

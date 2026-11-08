@@ -30,6 +30,15 @@
 
 自动触发：push 改动 `recipe/**` 或 workflow 本身；每月 1 号定时重建（跟随官方 IB 更新）。
 
+## 固件内置第三方 feed（files/）
+
+固件已预置 [dllkids openwrt-feed](https://down.dllkids.xyz/openwrt-feed/25.12/)（kenzok8 系第三方包源，含 ddns-go、mosdns 壳、openclash 等 623 个包）：
+
+- `files/etc/apk/repositories.d/dllkids-feed.list`：feed 仓库地址（aarch64_generic，对应本固件 25.12 基线）
+- `files/etc/apk/keys/dllkids-feed.pub.pem`：feed 的 ECDSA 签名公钥
+
+设备开机后 `apk update` 或在 LuCI「软件包管理」里即可直接安装该 feed 的包，等效于在设备上跑官方 `openwrt-feed-setup.sh`，但无需联网执行脚本。`files/` 目录下的所有文件构建时会原样合并进镜像 rootfs，可继续往里放其他 overlay 文件。
+
 ## 软件包增删（recipe/）
 
 | 文件 | 作用 | 机制 |
