@@ -1,0 +1,233 @@
+name: Build iStoreOS for Cyber3588-AIB
+
+# ─────────────────────────────────────────────────────────────
+# 用 iStoreOS 官方 ImageBuilder（25.12 / rockchip-armv8）为
+# Cyber Cyber3588-AIB (RK3588) 打包固件。不编译源码，几分钟出包。
+#
+# 软件包增删通过仓库根目录的 recipe/ 控制：
+#   recipe/packages-add.txt     要额外安装的包（一行一个，# 开头为注释）
+#   recipe/packages-remove.txt  要从镜像剔除的包（一行一个）
+# 两个列表当前为空 = 构建"基线固件"（官方 profile 默认包 + LuCI 管理界面套件）。
+#
+# 触发方式：
+#   1. 手动 Run workflow（可调 LAN IP / rootfs 分区大小等参数）
+#   2. 推送改动 recipe/ 或本工作流时自动构建
+#   3. 每月 1 号定时重建，跟随官方 IB 更新
+# ─────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      lan_ip:
+        description: 'LAN 管理地址（首启时由 uci-defaults 写入）'
+        required: true
+        default: '192.168.199.1'
+      rootfs_partsize:
+        description: 'rootfs 分区大小(MB)。剩余空间刷完后可另建分区挂载'
+        required: true
+        default: '4096'
+      with_gui_extras:
+        description: '集成 iStore 商店 / quickstart 首页 / 磁盘管理 / ttyd / argon 主题'
+        required: false
+        default: true
+        type: boolean
+      include_docker:
+        description: '集成 Docker + dockerman'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main, master]
+    paths:
+      - 'recipe/**'
+      - '.github/workflows/build.yml'
+  schedule:
+    - cron: '23 3 1 * *'
+
+permissions:
+  contents: read
+
+env:
+  IB_BASE: https://fw.koolcenter.com/iStoreOS/ib/rk3xxx
+  IB_FILE: istoreos-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst
+  PROFILE: cyber_cyber3588-aib
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+          df -h /
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gawk libncurses-dev zlib1g-dev git gettext \
+            libssl-dev xsltproc rsync wget curl file unzip tar zstd xz-utils \
+            python3 python3-setuptools openssl
+
+      - name: Download official ImageBuilder + verify checksum
+        working-directory: ${{ runner.temp }}
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o "$IB_FILE" "$IB_BASE/$IB_FILE"
+          curl -fL -o sha256sums "$IB_BASE/sha256sums"
+          grep imagebuilder sha256sums | sha256sum -c -
+          ls -lh "$IB_FILE"
+
+      - name: Extract ImageBuilder
+        run: |
+          cd "$RUNNER_TEMP"
+          tar --zstd -xf "$IB_FILE"
+          IB_DIR=$(ls -d "$RUNNER_TEMP"/istoreos-imagebuilder-*/ | head -1)
+          IB_DIR="${IB_DIR%/}"
+          echo "IB_DIR=$IB_DIR" >> "$GITHUB_ENV"
+          echo "解压到: $IB_DIR"
+
+      - name: Verify target profile exists (fail fast)
+        run: |
+          cd "$IB_DIR"
+          make info > ib-info.txt 2>&1 || true
+          if grep -q "^${PROFILE}:" ib-info.txt; then
+            grep -A3 "^${PROFILE}:" ib-info.txt
+            echo "✅ profile 存在"
+          else
+            echo "❌ 该 ImageBuilder 里没有 ${PROFILE}"
+            grep -E "^[a-z0-9_-]+:" ib-info.txt | head -120
+            exit 1
+          fi
+
+      - name: Compose package list (base + recipe)
+        id: pkgs
+        run: |
+          # ─────────────────────────────────────────────────────────────
+          # 管理页是「可选包」，不写就没有：IB 只保证 profile 的
+          # DEFAULT_PACKAGES（内核/驱动/dnsmasq/firewall4/dropbear…），
+          # uhttpd 和 luci-mod-* 必须显式列出，否则固件能开机但 80 端口
+          # 无人监听、进不去后台，且构建全程不报错。
+          #
+          # PACKAGES= 是「追加」语义：profile 默认包（kmod-r8169/kmod-nvme/
+          # kmod-rknpu/GPU/VPU 等）始终保留；前缀 - 的包名做剔除。
+          # ─────────────────────────────────────────────────────────────
+
+          # ── 管理界面底座 ──
+          P="uhttpd uhttpd-mod-ubus rpcd-mod-luci"
+          P="$P luci luci-light luci-mod-admin-full"
+          P="$P luci-app-firewall luci-i18n-firewall-zh-cn"
+          P="$P luci-proto-ppp luci-i18n-base-zh-cn"
+
+          if [ "${{ inputs.with_gui_extras }}" != "false" ]; then
+            P="$P istoreos-files quickstart luci-app-quickstart luci-i18n-quickstart-zh-cn"
+            P="$P luci-app-store luci-lib-taskd taskd"
+            P="$P luci-app-package-manager luci-i18n-package-manager-zh-cn"
+            P="$P luci-app-diskman luci-i18n-diskman-zh-cn"
+            P="$P luci-app-ttyd luci-i18n-ttyd-zh-cn"
+            P="$P luci-app-wol luci-i18n-wol-zh-cn"
+            P="$P luci-app-upnp luci-i18n-upnp-zh-cn"
+            P="$P luci-theme-argon luci-app-argon-config"
+            P="$P luci-i18n-argon-zh-cn luci-i18n-argon-config-zh-cn"
+          fi
+
+          if [ "${{ inputs.include_docker }}" = "true" ]; then
+            P="$P docker dockerd docker-compose"
+            P="$P luci-app-dockerman luci-i18n-dockerman-zh-cn"
+          fi
+
+          # ── recipe/packages-add.txt：追加安装 ──
+          if [ -s recipe/packages-add.txt ]; then
+            ADD=$(grep -v '^\s*#' recipe/packages-add.txt | grep -v '^\s*$' | tr '\n' ' ')
+            echo "recipe 追加: $ADD"
+            P="$P $ADD"
+          fi
+
+          # ── recipe/packages-remove.txt：剔除（转成 -pkg 负号语法）──
+          if [ -s recipe/packages-remove.txt ]; then
+            REM=$(grep -v '^\s*#' recipe/packages-remove.txt | grep -v '^\s*$' | sed 's/^\s*//;s/\s*$//;s/^/-/' | tr '\n' ' ')
+            echo "recipe 剔除: $REM"
+            P="$P $REM"
+            echo "removed=$REM" >> "$GITHUB_OUTPUT"
+          else
+            echo "removed=" >> "$GITHUB_OUTPUT"
+          fi
+
+          P=$(echo "$P" | tr -s ' ' | sed 's/^ *//;s/ *$//')
+          echo "packages=$P" >> "$GITHUB_OUTPUT"
+          echo "最终 PACKAGES："
+          echo "$P" | tr ' ' '\n' | sed 's/^/  /'
+
+      - name: Prepare files overlay (LAN IP)
+        run: |
+          # cyber3588-aib 的网口定义（LAN=eth1、WAN=eth0）官方 base-files
+          # 已内置，无需覆盖 /etc/config/network。这里只用一个 uci-defaults
+          # 脚本在首次启动时把 LAN 地址改成自定义值，其余全部沿用官方默认。
+          FILES="${{ github.workspace }}/files"
+          mkdir -p "$FILES/etc/uci-defaults"
+          LAN_IP="${{ inputs.lan_ip || '192.168.199.1' }}"
+          cat > "$FILES/etc/uci-defaults/99-lan-ip" <<EOF
+          #!/bin/sh
+          uci -q set network.lan.ipaddr='$LAN_IP'
+          uci -q commit network
+          exit 0
+          EOF
+          chmod 755 "$FILES/etc/uci-defaults/99-lan-ip"
+          find "$FILES" -type f
+
+      - name: Build image
+        run: |
+          cd "$IB_DIR"
+          make -j$(nproc) image \
+            PROFILE="${PROFILE}" \
+            PACKAGES="${{ steps.pkgs.outputs.packages }}" \
+            FILES="${{ github.workspace }}/files" \
+            ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}" \
+            CONFIG_TARGET_ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}"
+
+      - name: Collect artifacts
+        run: |
+          OUT="${{ github.workspace }}/out"
+          BIN="$IB_DIR/bin/targets/rockchip/armv8"
+          mkdir -p "$OUT"
+          cp "$BIN"/*cyber*.img.gz "$BIN"/*cyber*.manifest "$BIN"/sha256sums "$OUT/" 2>/dev/null || true
+          cp "$BIN"/*config.buildinfo "$OUT/" 2>/dev/null || true
+          ls -lh "$OUT"
+          if [ -z "$(ls -A "$OUT")" ]; then echo "❌ 没有生成任何镜像"; exit 1; fi
+          (cd "$OUT" && sha256sum * | tee SHA256SUMS.txt)
+
+      - name: Verify image (fail fast)
+        run: |
+          # 1) 管理页必需包必须在 —— 缺了固件能开机但进不去后台
+          MAN=$(ls "${{ github.workspace }}"/out/*.manifest | head -1)
+          echo "核对：$MAN（$(wc -l < "$MAN") 个包）"
+          NEED="uhttpd luci-mod-admin-full luci-mod-network luci-mod-system luci-mod-status luci-app-firewall"
+          MISSING=""
+          for p in $NEED; do
+            grep -q "^$p " "$MAN" && echo "  ✅ $p" || { echo "  ❌ $p 缺失"; MISSING="$MISSING $p"; }
+          done
+          [ -z "$MISSING" ] || { echo "❌ 缺少管理页必需包：$MISSING"; exit 1; }
+          # 2) recipe 剔除的包必须不在
+          for p in ${{ steps.pkgs.outputs.removed }}; do
+            n="${p#-}"
+            if grep -q "^$n " "$MAN"; then echo "  ❌ 应删未删: $n"; exit 1; fi
+            echo "  ✅ 已剔除: $n"
+          done
+          # 3) 设备驱动包必须在（profile 默认包）
+          for p in kmod-r8169 kmod-nvme kmod-rknpu; do
+            grep -q "^$p " "$MAN" || { echo "  ❌ 设备包缺失: $p"; exit 1; }
+          done
+          echo "✅ 校验通过"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: istoreos-${{ env.PROFILE }}-${{ github.run_number }}
+          path: out/
+          retention-days: 30

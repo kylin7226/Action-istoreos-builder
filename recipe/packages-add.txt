@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────────────
+# 要额外安装进固件的软件包（一行一个包名，# 开头为注释）
+# 构建时会被追加到 PACKAGES=，依赖由 apk 自动解析。
+#
+# 包来源优先级：
+#   1. 官方 IB 自带的 packages/ 目录（无需任何额外操作，直接写包名）
+#      例：docker dockerd docker-compose luci-app-dockerman
+#          appfilter kmod-oaf luci-app-oaf luci-i18n-oaf-zh-cn
+#   2. 第三方 feed 的 .apk（如 https://down.dllkids.xyz/openwrt-feed/25.12/aarch64_generic/）
+#      需先在 workflow 里加一步下载到 $IB_DIR/packages/，IB 会自动重建索引
+#      （apk mkndx --allow-untrusted），例：ddns-go、luci-app-ddns-go、luci-app-mosdns
+#   3. 上游快照仓库（如 https://downloads.immortalwrt.org/snapshots/packages/aarch64_generic/packages/）
+#      例：mosdns（dllkids feed 只有 luci 壳，主程序在 ImmortalWrt 快照里）
+#
+# 注意：写错包名会让构建失败（no such package）。
+# 当前为空 = 不追加任何包。
+# ─────────────────────────────────────────────────────────────
