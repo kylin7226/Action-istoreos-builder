@@ -119,27 +119,43 @@ jobs:
           echo "----- 确认目标包已接入 -----"
           ls -l package/feeds/rkmpp/
 
+      - name: Patch ffmpeg-mpp feed (drop alsa-lib → kernel chain)
+        run: |
+          cd "$SRC"
+          # ── 关键修复（run #7/#8 根因）──
+          # libffmpeg-mpp 的 DEPENDS 里有 `+AUDIO_SUPPORT:alsa-lib`，alsa-lib 的
+          # DEPENDS 是 `@AUDIO_SUPPORT +kmod-sound-core`，于是 buildroot 生成
+          #   alsa-lib/compile += kernel/linux/compile
+          # 即：编译 ffmpeg-mpp 会拉起整个内核，而我们只交叉编译用户态库、从不建内核
+          # → package/kernel/linux/compile Error 1（No rule to make target
+          #   linux-6.12.x/.config）。
+          #
+          # 为什么不能靠关 AUDIO_SUPPORT 解决：AUDIO_SUPPORT 不只被 target 的 `audio`
+          # FEATURE select，target/Config.in 里 PCI_SUPPORT 和 USB_SUPPORT 也都
+          # `select AUDIO_SUPPORT`。cyber3588-aib 必须带 pci/usb（NVMe/r8169/USB），
+          # 所以 AUDIO_SUPPORT 恒为 y（kconfig select 强制，.config 里关不掉），
+          # `+AUDIO_SUPPORT:alsa-lib` 恒生效。（run #8 就是删了 audio FEATURE 后
+          # AUDIO_SUPPORT 仍 y，守卫 exit 1。）
+          #
+          # 干净办法：直接改 feed 的 Makefile —— 去掉 alsa-lib 依赖，并无条件
+          # --disable-alsa。alsa-lib 退出闭包后 kmod-sound-core / kernel 也不再被拉起。
+          # 代价：ffmpeg-mpp 没有本地 ALSA 声卡 I/O；对 RK3588 硬件视频转码无影响，
+          # 音频编解码（aac/mp3/opus 等 codec）照常可用。
+          MK=feeds/rkmpp/multimedia/ffmpeg-mpp/Makefile
+          test -f "$MK" || { echo "❌ 找不到 $MK"; exit 1; }
+          # 1) 去掉 libffmpeg-mpp 的 alsa-lib 依赖
+          sed -i 's/+AUDIO_SUPPORT:alsa-lib //' "$MK"
+          # 2) 无条件 --disable-alsa：原 guard `ifeq ($(CONFIG_AUDIO_SUPPORT),)` 因
+          #    AUDIO_SUPPORT 恒 y 而永不成立，改成 `ifeq (,)`（空==空，恒真）。
+          sed -i 's/^ifeq (\$(CONFIG_AUDIO_SUPPORT),)$/ifeq (,)/' "$MK"
+          echo "----- 确认 alsa-lib 依赖已去除（应无输出）-----"
+          grep -n 'alsa-lib' "$MK" && { echo "❌ alsa-lib 依赖仍在"; exit 1; } || echo "  ✅ 无 alsa-lib 依赖"
+          echo "----- 确认 --disable-alsa 无条件生效 -----"
+          grep -n -A2 '^ifeq (,)' "$MK"
+
       - name: Write .config
         run: |
           cd "$SRC"
-          # ── 关键修复（run #7 根因）──
-          # ffmpeg-mpp 的 DEPENDS 有 `+AUDIO_SUPPORT:alsa-lib`，而 alsa-lib 的
-          # DEPENDS 是 `@AUDIO_SUPPORT +kmod-sound-core`，buildroot 因此生成
-          #   alsa-lib/compile += kernel/linux/compile
-          # 即：只要 AUDIO_SUPPORT 开着，编译 ffmpeg-mpp 就会拉起 package/kernel/linux
-          # （内核 + 所有选中的 kmod），而我们从不建内核 → 报
-          #   No rule to make target '.../linux-6.12.x/.config' / package/kernel/linux/compile Error 1。
-          # CONFIG_AUDIO_SUPPORT 是被 target 的 `audio` FEATURE 用 kconfig `select`
-          # 强制选中的（scripts/target-metadata.pl: /audio/ -> select AUDIO_SUPPORT），
-          # 无法在 .config 里关掉。唯一干净的办法：defconfig 之前把 rockchip target
-          # FEATURES 里的 `audio` 去掉，AUDIO_SUPPORT 就不会被 select，alsa-lib 随之
-          # 退出 ffmpeg 闭包，整个闭包变成纯用户态、不再碰内核。
-          # 代价：ffmpeg-mpp 以 --disable-alsa 构建（feed Makefile 已处理），即没有
-          # 本地 ALSA 声卡输入/输出。对 RK3588 硬件视频转码无影响，音频编解码
-          # （aac/mp3/opus 等 codec）照常可用。
-          sed -i '/^FEATURES:=/s/ audio / /' target/linux/rockchip/Makefile
-          echo "----- 去掉 audio 后的 FEATURES -----"
-          grep -n '^FEATURES:=' target/linux/rockchip/Makefile
           cat > .config <<'EOF'
           CONFIG_TARGET_rockchip=y
           CONFIG_TARGET_rockchip_armv8=y
@@ -156,12 +172,14 @@ jobs:
           CONFIG_PACKAGE_libffmpeg-mpp=m
           EOF
           make defconfig
-          # 确认 AUDIO_SUPPORT 确实没被 select（否则 alsa-lib 仍会拉内核，提前失败省时间）
-          if grep -qE '^CONFIG_AUDIO_SUPPORT=y' .config; then
-            echo "❌ CONFIG_AUDIO_SUPPORT 仍为 y，audio feature 没去掉，alsa-lib 会拉起内核编译"
+          # AUDIO_SUPPORT 恒为 y（PCI/USB FEATURE 强制 select，见上一步注释），这本身
+          # 无害——只要 ffmpeg-mpp 不再依赖 alsa-lib，闭包就不碰内核。上一步已 patch 掉
+          # feed Makefile 的 alsa-lib 依赖，这里确认 defconfig 后 alsa-lib 确实没被选中。
+          if grep -qE '^CONFIG_PACKAGE_alsa-lib=[ym]' .config; then
+            echo "❌ alsa-lib 仍被选中，feed patch 没生效，会拉起内核编译"
             exit 1
           fi
-          echo "  ✅ AUDIO_SUPPORT 已关闭（alsa-lib 不在闭包内）"
+          echo "  ✅ alsa-lib 未进闭包（feed patch 生效，不会拉起内核）"
           # ── 关键修复（run #5 根因）──
           # rockchip target 的 DEFAULT_PACKAGES 含 kmod-gpio-button-hotplug，
           # cyber3588-aib device 又追加 kmod-r8169/nvme/ata-ahci-dwc/hwmon-pwmfan/
@@ -232,7 +250,7 @@ jobs:
             ${{ github.workspace }}/openwrt/dl
             ${{ github.workspace }}/openwrt/staging_dir/host
             ${{ github.workspace }}/openwrt/build_dir/host
-          key: tc-${{ runner.os }}-${{ hashFiles(format('{0}/.config', github.workspace)) }}-${{ env.SRC_BRANCH }}
+          key: tc-${{ runner.os }}-${{ hashFiles(format('{0}/openwrt/.config', github.workspace)) }}-${{ env.SRC_BRANCH }}
           restore-keys: |
             tc-${{ runner.os }}-
 
@@ -248,9 +266,10 @@ jobs:
           cd "$SRC"
           # 定向编译三个 feed 目录即可产出全部 7 个 .apk。已核对 buildroot 的
           # tmp/.packagedeps：ffmpeg-mpp/compile 的前置包含 fdk-aac/gnutls/libdrm/
-          # libx264/opus/rkmpp/rkrga/zlib/bzip2/lame(+alsa-lib)，gnutls 又拉起
+          # libx264/opus/rkmpp/rkrga/zlib/bzip2/lame，gnutls 又拉起
           # nettle/gmp/libtasn1/p11-kit，所以依赖闭包会被自动构建，且不会去碰
-          # busybox/kmod 等默认包（那些需要内核，会拖慢甚至失败）。
+          # busybox/kmod 等默认包（那些需要内核，会拖慢甚至失败）。alsa-lib 已被
+          # 上一步 feed patch 移出闭包，不再拉起 kernel/linux。
           LOG="$RUNNER_TEMP/compile.log"
           # 防御：toolchain/install 等步骤若触发了自动 defconfig，可能把 target/device
           # 默认的 kmod-* 重新设回 =y。编译前再用 sed 关一次（幂等），确保不会去建内核模块。
