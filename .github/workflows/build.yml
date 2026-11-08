@@ -34,7 +34,7 @@ on:
       include_docker:
         description: '集成 Docker + dockerman'
         required: false
-        default: false
+        default: true
         type: boolean
   push:
     branches: [main, master]
@@ -162,7 +162,8 @@ jobs:
             P="$P luci-i18n-argon-zh-cn luci-i18n-argon-config-zh-cn"
           fi
 
-          if [ "${{ inputs.include_docker }}" = "true" ]; then
+          # 注意用 != "false"：push/定时触发时 inputs 为空，也应带上 Docker
+          if [ "${{ inputs.include_docker }}" != "false" ]; then
             P="$P docker dockerd docker-compose"
             P="$P luci-app-dockerman luci-i18n-dockerman-zh-cn"
           fi
