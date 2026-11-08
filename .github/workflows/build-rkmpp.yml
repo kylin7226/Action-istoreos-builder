@@ -122,6 +122,24 @@ jobs:
       - name: Write .config
         run: |
           cd "$SRC"
+          # ── 关键修复（run #7 根因）──
+          # ffmpeg-mpp 的 DEPENDS 有 `+AUDIO_SUPPORT:alsa-lib`，而 alsa-lib 的
+          # DEPENDS 是 `@AUDIO_SUPPORT +kmod-sound-core`，buildroot 因此生成
+          #   alsa-lib/compile += kernel/linux/compile
+          # 即：只要 AUDIO_SUPPORT 开着，编译 ffmpeg-mpp 就会拉起 package/kernel/linux
+          # （内核 + 所有选中的 kmod），而我们从不建内核 → 报
+          #   No rule to make target '.../linux-6.12.x/.config' / package/kernel/linux/compile Error 1。
+          # CONFIG_AUDIO_SUPPORT 是被 target 的 `audio` FEATURE 用 kconfig `select`
+          # 强制选中的（scripts/target-metadata.pl: /audio/ -> select AUDIO_SUPPORT），
+          # 无法在 .config 里关掉。唯一干净的办法：defconfig 之前把 rockchip target
+          # FEATURES 里的 `audio` 去掉，AUDIO_SUPPORT 就不会被 select，alsa-lib 随之
+          # 退出 ffmpeg 闭包，整个闭包变成纯用户态、不再碰内核。
+          # 代价：ffmpeg-mpp 以 --disable-alsa 构建（feed Makefile 已处理），即没有
+          # 本地 ALSA 声卡输入/输出。对 RK3588 硬件视频转码无影响，音频编解码
+          # （aac/mp3/opus 等 codec）照常可用。
+          sed -i '/^FEATURES:=/s/ audio / /' target/linux/rockchip/Makefile
+          echo "----- 去掉 audio 后的 FEATURES -----"
+          grep -n '^FEATURES:=' target/linux/rockchip/Makefile
           cat > .config <<'EOF'
           CONFIG_TARGET_rockchip=y
           CONFIG_TARGET_rockchip_armv8=y
@@ -138,6 +156,12 @@ jobs:
           CONFIG_PACKAGE_libffmpeg-mpp=m
           EOF
           make defconfig
+          # 确认 AUDIO_SUPPORT 确实没被 select（否则 alsa-lib 仍会拉内核，提前失败省时间）
+          if grep -qE '^CONFIG_AUDIO_SUPPORT=y' .config; then
+            echo "❌ CONFIG_AUDIO_SUPPORT 仍为 y，audio feature 没去掉，alsa-lib 会拉起内核编译"
+            exit 1
+          fi
+          echo "  ✅ AUDIO_SUPPORT 已关闭（alsa-lib 不在闭包内）"
           # ── 关键修复（run #5 根因）──
           # rockchip target 的 DEFAULT_PACKAGES 含 kmod-gpio-button-hotplug，
           # cyber3588-aib device 又追加 kmod-r8169/nvme/ata-ahci-dwc/hwmon-pwmfan/
