@@ -268,3 +268,165 @@ luci-proto-autoip
 luci-proto-unet
 qed-firmware
 radeon-firmware
+
+# ===== 第三批：对照 bluise 完整清单(330项)补齐的防御性剔除 =====
+# 说明：以下 111 项均不在当前 267 包镜像中，负号为空操作；
+#       目的是防止上游 IB 更新后这些包被默认引入。
+# 清单中在镜像里但【不可删】的项：
+#   containerd/docker/docker-compose/dockerd/runc/tini/luci-app-dockerman/luci-i18n-dockerman-zh-cn（用户要求保留容器栈）
+#   kmod-drm（kmod-rknpu 硬依赖，NPU）
+#   luci-theme-bootstrap（luci-light 硬依赖）
+
+# DRM 子包全家（x86/其他 GPU 用；kmod-drm 本体是 kmod-rknpu 硬依赖，保留）
+
+kmod-drm-amdgpu
+kmod-drm-buddy
+kmod-drm-display-helper
+kmod-drm-exec
+kmod-drm-gpuvm
+kmod-drm-i915
+kmod-drm-i915-coex
+kmod-drm-ivpu
+kmod-drm-kms-helper
+kmod-drm-radeon
+kmod-drm-sched
+kmod-drm-suballoc-helper
+kmod-drm-ttm
+kmod-drm-ttm-helper
+kmod-drm-xe-sriov
+libdrm
+xe-firmware
+
+
+# QoS/流控/SCTP/VXLAN 内核模块（IB 默认未引入，防御性剔除）
+
+kmod-sched
+kmod-sched-bpf
+kmod-sched-cake
+kmod-sched-connmark
+kmod-sched-core
+kmod-sched-ctinfo
+kmod-sched-flower
+kmod-sched-ipset
+kmod-sched-mqprio
+kmod-sched-mqprio-common
+kmod-sctp
+kmod-vxlan
+
+
+# 声音/视频/USB 外设（无声卡、无摄像头、无打印机需求）
+
+kmod-sound-core
+kmod-sound-midi2
+kmod-sound-midi2-usb
+kmod-usb-audio
+kmod-usb-printer
+kmod-video-core
+kmod-video-uvc
+kmod-video-videobuf2
+
+
+# USB 控制器驱动（RK3588 内核已内建 dwc3/xhci，这些包不在镜像中）
+
+kmod-usb-dwc2
+kmod-usb-dwc3
+kmod-usb-ohci
+kmod-usb-ohci-pci
+kmod-usb-uhci
+
+
+# NFS/CIFS/HFS 等文件系统与 NAS 应用（无 SMB/CIFS/NAS 需求）
+
+kmod-fs-cifs
+kmod-fs-hfs
+kmod-fs-hfsplus
+kmod-fs-jfs
+kmod-fs-ksmbd
+kmod-fs-minix
+kmod-fs-nfs
+kmod-fs-nfs-common
+kmod-fs-nfs-common-rpcsec
+kmod-fs-nfs-v3
+kmod-fs-nfs-v4
+kmod-fs-nfsd
+luci-app-cifs-mount
+luci-app-nfs
+luci-app-samba4
+luci-i18n-cifs-mount-zh-cn
+luci-i18n-nfs-zh-cn
+nfs-kernel-server
+nfs-kernel-server-utils
+nfs-utils
+
+
+# 调制解调器/移动网络残留（无 3/4/5G 模块）
+
+adb
+adb-enablemodem
+kmod-usb-net-huawei-cdc-ncm
+kmod-usb-net-ipheth
+kmod-usb-net-sierrawireless
+umbim
+wwan
+
+
+# QLogic 网卡（服务器 PCIe 网卡，设备没有）
+
+kmod-qed
+kmod-qede
+kmod-qedf
+
+
+# unetd/unet 工具（无需求）
+
+unet-cli
+unetd
+
+
+# LuCI 应用残留（ddns 已由 ddns-go 替代；linkease/mergerfs/unishare 无 NAS 需求）
+
+luci-app-ddns
+luci-app-linkease
+luci-app-mergerfs
+luci-app-unishare
+luci-i18n-ddns-zh-cn
+luci-i18n-ddnsto-zh-cn
+
+
+# 硬件监控/性能工具（无风扇控制/监控需求）
+
+lm-sensors
+lm-sensors-detect
+nvtop
+sysstat
+
+
+# perl 全家（无 perl 依赖的保留应用，防御性剔除）
+
+perl
+perlbase-base
+perlbase-bytes
+perlbase-class
+perlbase-config
+perlbase-cwd
+perlbase-errno
+perlbase-essential
+perlbase-fcntl
+perlbase-file
+perlbase-filehandle
+perlbase-i18n
+perlbase-integer
+perlbase-io
+perlbase-list
+perlbase-locale
+perlbase-params
+perlbase-posix
+perlbase-re
+perlbase-scalar
+perlbase-selectsaver
+perlbase-socket
+perlbase-symbol
+perlbase-tie
+perlbase-unicore
+perlbase-utf8
+perlbase-xsloader
