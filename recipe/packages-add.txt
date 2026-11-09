@@ -34,13 +34,19 @@ libdrm
 # kmod-rga3
 
 # RK3588 多媒体内核驱动：
-#   kmod-rk_vcodec = RKMPP 视频编解码内核驱动（VPU，依赖的
-#                    kmod-rockchip-system-monitor 镜像里已有）
-#   kmod-rga3      = RGA 2D 加速器内核驱动
-#   注意：用户态库 librockchip_mpp / librga 在 IB、dllkids feed、
-#   ImmortalWrt 官方仓库里都没有，需要第三方包源或源码编译（见 README）
+#   kmod-rk_vcodec = RKMPP 视频编解码内核驱动（VPU，生成 /dev/mpp_service）
+#   kmod-rga3      = RGA 2D 加速器内核驱动（生成 /dev/rga）
+#   只装内核驱动、不装用户态库：容器镜像自带 librockchip_mpp/librga，
+#   Docker 透传 /dev/mpp_service、/dev/rga 即可用满 VPU/RGA 硬件。
+#   宿主不跑原生 ffmpeg-mpp 转码，故无需 rkmpp/rkrga/ffmpeg-mpp 用户态 apk。
 kmod-rk_vcodec
 kmod-rga3
+
+# 硬件传感器/风扇监控：设备带散热风扇，装 lm-sensors 提供 `sensors` 命令读取
+#   温度与风扇转速。风扇自动控温本身由内核 kmod-hwmon-pwmfan + kmod-thermal
+#   （profile 默认包，镜像已含）完成，无需用户态干预；lm-sensors 仅用于观测。
+#   注：IB 仓库只有 lm-sensors，没有 lm-sensors-detect，故不加后者。
+lm-sensors
 
 # NFS 服务器（内核态）：luci-app-nfs 提供 LuCI 界面，
 #   nfs-kernel-server 自动带上 rpcbind/kmod-fs-nfs*/nfsd 等依赖
@@ -51,18 +57,12 @@ nfs-kernel-server
 nfs-kernel-server-utils
 nfs-utils
 
-# ── RKMPP-MANAGED-BLOCK ────────────────────────────────
-# RK3588 多媒体用户态库，由 build-rkmpp.yml 从源码编译，.apk 存于
-# GitHub Release（tag: rkmpp-apk），build.yml 构建时拉取注入 IB。
-# 与上面已装的内核驱动 kmod-rk_vcodec(VPU) / kmod-rga3(RGA) 配套。
-#   rkmpp          librockchip_mpp（VPU 用户态库）
-#   rkrga          librga（RGA 2D 加速用户态库）
-#   libffmpeg-mpp  带 MPP+RGA 硬件加速的 ffmpeg 库
-#   ffmpeg-mpp     ffmpeg 命令行
-#   ffprobe-mpp    ffprobe 命令行
-# 下面几行由 build-rkmpp.yml 自动维护（也可手动增删）。
-rkmpp
-rkrga
-libffmpeg-mpp
-ffmpeg-mpp
-ffprobe-mpp
+# frp 内网穿透（fast reverse proxy）：frpc=客户端，frps=服务端。
+#   IB 本地仓库没有，apk 由 build.yml 从 dllkids feed 注入（当前 0.66.0）。
+#   纯命令行/守护进程，配置文件在 /etc/frp/ 或 /etc/config/frpc（视包而定）。
+frpc
+frps
+# 可选：LuCI 网页界面管理 frpc/frps（需要就取消下面两行注释，
+#   build.yml 的注入步骤已支持自动从 feed 拉取）
+# luci-app-frpc
+# luci-app-frps

@@ -263,7 +263,8 @@ smartmontools-drivedb
 kmod-bnx2x
 kmod-intel-sriov-compat
 kmod-media-controller
-libsensors5
+# 注：libsensors5 已从剔除名单撤销——它是 lm-sensors 的硬依赖（设备有风扇，
+#     需传感器/风扇监控），剔除它会导致 apk 依赖冲突、构建失败。见 packages-add.txt。
 luci-proto-autoip
 luci-proto-unet
 qed-firmware
@@ -383,10 +384,12 @@ luci-i18n-ddns-zh-cn
 luci-i18n-ddnsto-zh-cn
 
 
-# 硬件监控/性能工具（无风扇控制/监控需求）
+# 性能工具（无 GPU 监控 / 系统性能统计需求）
+# 注：lm-sensors / lm-sensors-detect 已撤销剔除——设备有风扇，需要传感器/风扇
+#     转速监控，改为安装进固件（见 packages-add.txt 的 lm-sensors）。
+#     风扇自动控温由 kmod-hwmon-pwmfan + kmod-thermal（profile 默认包，镜像已含）
+#     在内核态完成，与用户态 lm-sensors 无关，二者都不剔除。
 
-lm-sensors
-lm-sensors-detect
 nvtop
 sysstat
 
