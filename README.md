@@ -17,7 +17,9 @@
    git push -u origin main
    ```
 2. 仓库页面 → Actions → `Build iStoreOS for Cyber3588-AIB` → Run workflow。
-3. 构建完成后在 run 页面底部 Artifacts 下载固件包。
+3. 构建完成后取固件：
+   - **Release（推荐）**：仓库 → Releases → `firmware`（滚动 tag，始终是最新固件），下载 `*-squashfs-sysupgrade.img.gz`
+   - 或 run 页面底部 Artifacts（每次 run 的临时产物，保留 30 天）
 
 ### workflow_dispatch 参数
 
@@ -26,9 +28,9 @@
 | `lan_ip` | 192.168.199.1 | LAN 管理地址 |
 | `rootfs_partsize` | 4096 | rootfs 分区大小 (MB) |
 | `with_gui_extras` | true | iStore 商店 / quickstart / 磁盘管理 / ttyd / argon 主题（中文） |
-| `include_docker` | false | Docker + dockerman |
+| `include_docker` | true | Docker + dockerman |
 
-自动触发：push 改动 `recipe/**` 或 workflow 本身；每月 1 号定时重建（跟随官方 IB 更新）。
+自动触发：push 改动 `recipe/**` 或 workflow 本身立即构建；**每天定时**（03:23 UTC）拉取官方 IB 的 sha256 与上次构建记录比对，**仅当官方 IB 有更新时才自动重建**（记录存于 `firmware` Release 的 `ib-source-sha256.txt` 资产）。因发布到固定滚动 Release，多个构建用 concurrency 串行化，避免互相覆盖。
 
 ## 固件内置第三方 feed（files/）
 
@@ -46,10 +48,10 @@
 | `recipe/packages-add.txt` | 追加安装 | 逐行追加到 `PACKAGES=` |
 | `recipe/packages-remove.txt` | 剔除 | 逐行转成 `-包名` 负号语法 |
 
-两个列表当前内容（本地验证 317 包 / 89MB）：
+两个列表当前内容：
 
-- **add**：ddns-go + luci-app-ddns-go（feed 注入）；RK3588 GPU 驱动 `kmod-rkgpu-bifrost-csf`（Mali-G610，自动带 CSF 固件）+ `kmod-drm-rockchip` + `libdrm`；多媒体内核驱动 `kmod-rk_vcodec`（RKMPP VPU）+ `kmod-rga3`（RGA 2D）；NFS 服务器全套 `luci-app-nfs` + `nfs-kernel-server` 等
-- **remove**：对照 bluise 精简清单的 300+ 项负号剔除（WiFi/调制解调器/NAS 网盘/SMB/x86 驱动等；均不在镜像中的为防御性空操作，防上游 IB 更新后默认引入）
+- **add**：ddns-go + luci-app-ddns-go（feed 注入）；frpc + frps（内网穿透，feed 注入）；RK3588 GPU 驱动 `kmod-rkgpu-bifrost-csf`（Mali-G610，自动带 CSF 固件）+ `kmod-drm-rockchip` + `libdrm`；多媒体内核驱动 `kmod-rk_vcodec`（RKMPP VPU）+ `kmod-rga3`（RGA 2D，仅内核驱动，用户态库交给容器）；`lm-sensors`（风扇/温度监控，设备带风扇）；NFS 服务器全套 `luci-app-nfs` + `nfs-kernel-server` 等
+- **remove**：对照 bluise 精简清单的 300+ 项负号剔除（WiFi/调制解调器/NAS 网盘/SMB/x86 驱动等；均不在镜像中的为防御性空操作，防上游 IB 更新后默认引入）。注意：所保留包的硬依赖（如 `libsensors5` ← lm-sensors、`rpcbind` ← NFS、`libdrm`/drm-helper ← GPU）已从剔除名单撤销，否则 apk 依赖冲突构建失败
 
 基线固件包含：
 - **profile 默认包**（IB 保证）：内核、驱动（kmod-r8169 网卡 / kmod-nvme / kmod-ata-ahci-dwc / kmod-rknpu / 风扇温控）、dnsmasq、firewall4、dropbear 等
@@ -66,14 +68,15 @@
 - `ddns-go / luci-app-ddns-go`：dllkids feed（`https://down.dllkids.xyz/openwrt-feed/25.12/aarch64_generic/`）
 - `luci-app-mosdns` + `geo2txt / v2ray-geoip / v2ray-geosite`：同上 dllkids feed
 - `mosdns` 主程序：dllkids feed 没有，在 ImmortalWrt snapshots（`https://downloads.immortalwrt.org/snapshots/packages/aarch64_generic/packages/`）
-- **mpp/librga 用户态库**（`librockchip_mpp` / `librga`）：IB、dllkids feed、ImmortalWrt 官方仓库都没有现成 apk；社区只有 Debian/glibc 版（如 tsukumijima/librga-rockchip），与本固件 musl 不兼容。内核侧驱动已内置（kmod-rk_vcodec + kmod-rga3），推荐用 Docker 方案：跑自带 mpp/rga 用户态库的容器（如 nyanmisaka 的 jellyfin 镜像），把 `/dev/mpp_service`、`/dev/rga`、`/dev/dri` 映射进容器即可硬解。若要固件原生用户态库，需从 [airockchip/mpp](https://github.com/airockchip/mpp) + [airockchip/librga](https://github.com/airockchip/librga) 源码编译（超出 IB 能力，需完整 SDK）
+- **mpp/librga 用户态库**（`librockchip_mpp` / `librga`）：IB、dllkids feed、ImmortalWrt 官方仓库都没有现成 apk；社区只有 Debian/glibc 版（如 tsukumijima/librga-rockchip），与本固件 musl 不兼容。**已决定采用 Docker 方案**：固件只保留内核驱动 `kmod-rk_vcodec` + `kmod-rga3`（生成 `/dev/mpp_service`、`/dev/rga`），用户态库由容器镜像自带（如 nyanmisaka 的 jellyfin 镜像），把 `/dev/mpp_service`、`/dev/rga`、`/dev/dri` 映射进容器即可硬解。曾经用过的源码编译 workflow（`build-rkmpp.yml` → Release `rkmpp-apk`）已删除，不再维护。
+- **Android in Docker（Redroid 等）**：内核已内建 binder（`CONFIG_ANDROID_BINDER_IPC=y` + `CONFIG_ANDROID_BINDERFS=y`，rockchip target 覆盖打开，非模块），binderfs 挂载 `/dev/binderfs` 后可直接跑 Redroid 11+（用 memfd，无需 ashmem）。binder 是内建的，无需加任何包。
 
 第三方 .apk 的接入方式：workflow 里加一步下载到 `$IB_DIR/packages/`，IB 构建时会自动 `apk mkndx --allow-untrusted` 重建索引，无需签名。
 
 ## 刷写
 
 - **SD 卡 / eMMC**：`gunzip -c xxx-sysupgrade.img.gz | sudo dd of=/dev/sdX bs=4M conv=fsync`，或用 balenaEtcher / Rufus
-- **已有 iStoreOS/OpenWrt 系统**：系统 → 备份/升级 → 刷写 sysupgrade 镜像（保留配置）
+- **已有 iStoreOS/OpenWrt 系统**：从 `firmware` Release 下载 `*-squashfs-sysupgrade.img.gz` → 系统 → 备份/升级 → 刷写 sysupgrade 镜像（保留配置，一键升级）。注意保留配置的升级不会触发 uci-defaults，自定义 LAN IP 只在干净首刷时生效
 - 首次启动后访问 `http://192.168.199.1`，root 无密码，建议立即设置
 
 ## 本地构建（不经 CI）

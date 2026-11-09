@@ -12,7 +12,12 @@ name: Build iStoreOS for Cyber3588-AIB
 # 触发方式：
 #   1. 手动 Run workflow（可调 LAN IP / rootfs 分区大小等参数）
 #   2. 推送改动 recipe/ 或本工作流时自动构建
-#   3. 每月 1 号定时重建，跟随官方 IB 更新
+#   3. 每天定时检查官方 IB 是否更新，有更新才自动重建（见 check-upstream job）
+#
+# 构建产物：
+#   - 每次 run 的临时 artifact（actions/upload-artifact，保留 30 天）
+#   - 固定滚动 Release（tag: firmware，每次 --clobber 覆盖为最新固件）。
+#     里面的 *-squashfs-sysupgrade.img.gz 可在 LuCI「系统 → 备份/升级」一键刷写。
 # ─────────────────────────────────────────────────────────────
 
 on:
@@ -43,10 +48,17 @@ on:
       - 'files/**'
       - '.github/workflows/build.yml'
   schedule:
-    - cron: '23 3 1 * *'
+    # 每天 03:23 UTC 检查官方 IB 是否更新（见 check-upstream job），有更新才构建
+    - cron: '23 3 * * *'
+
+# 固定滚动 Release（tag: firmware）用 --clobber 覆盖，两个并发构建会互相覆盖，
+# 故串行化：同一时刻只跑一个构建，其余排队（cancel-in-progress:false，不取消在跑的）。
+concurrency:
+  group: firmware-build
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write   # 创建/更新 firmware Release 需要写权限
 
 env:
   IB_BASE: https://fw.koolcenter.com/iStoreOS/ib/rk3xxx
@@ -54,7 +66,46 @@ env:
   PROFILE: cyber_cyber3588-aib
 
 jobs:
+  # ── 定时任务专用：检测官方 ImageBuilder 是否更新 ──────────────
+  # 仅 schedule 触发时运行；比对上游 IB 的 sha256 与上次构建记录
+  # （记录存在 firmware Release 的 ib-source-sha256.txt 资产里，不进 git 树）。
+  # push / 手动 dispatch 时本 job 跳过，build 照常执行（见 build.if）。
+  check-upstream:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.chk.outputs.changed }}
+    steps:
+      - name: Compare upstream IB sha256 with last build
+        id: chk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          UP=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$IB_BASE/sha256sums" | grep imagebuilder | awk '{print $1}')
+          if [ -z "$UP" ]; then echo "❌ 取不到上游 sha256sums"; exit 1; fi
+          echo "上游 IB sha256 : $UP"
+          LAST=""
+          if gh release download firmware -R "${{ github.repository }}" --pattern ib-source-sha256.txt --dir /tmp/ibstate >/dev/null 2>&1; then
+            LAST=$(tr -d '[:space:]' < /tmp/ibstate/ib-source-sha256.txt 2>/dev/null || true)
+          fi
+          echo "上次构建 sha256: ${LAST:-<无记录（首次）>}"
+          if [ -z "$LAST" ] || [ "$LAST" != "$UP" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 官方 IB 有更新或首次运行 → 触发构建"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "⏭️ 官方 IB 未变化 → 跳过本次构建"
+          fi
+
   build:
+    needs: check-upstream
+    # 非定时（push/手动）总是构建；定时仅在 check-upstream 判定有更新时构建。
+    # always() 保证 check-upstream 被跳过（非 schedule）时 build 仍能运行。
+    if: ${{ always() && (github.event_name != 'schedule' || needs.check-upstream.outputs.changed == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -83,6 +134,11 @@ jobs:
           curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o "$IB_FILE" "$IB_BASE/$IB_FILE"
           curl -fL -o sha256sums "$IB_BASE/sha256sums"
           grep imagebuilder sha256sums | sha256sum -c -
+          # 记录本次构建所用上游 IB 的 sha256：发布步骤会写进 Release 状态资产，
+          # 供定时 check-upstream 下次比对（判断官方是否又更新了）
+          IB_SHA=$(grep imagebuilder sha256sums | awk '{print $1}')
+          echo "IB_SHA=$IB_SHA" >> "$GITHUB_ENV"
+          echo "本次 IB sha256: $IB_SHA"
           ls -lh "$IB_FILE"
 
       - name: Extract ImageBuilder
@@ -295,3 +351,30 @@ jobs:
           name: istoreos-${{ env.PROFILE }}-${{ github.run_number }}
           path: out/
           retention-days: 30
+
+      - name: "Publish firmware to Release (rolling tag firmware)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG=firmware
+          REPO="${{ github.repository }}"
+          cd "${{ github.workspace }}/out"
+          # 写入本次构建对应的上游 IB 哈希 —— 定时 check-upstream 的状态记录
+          echo "${IB_SHA:-unknown}" > ib-source-sha256.txt
+          # Release 不存在则创建（滚动 tag，标题/说明固定）
+          if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$REPO" \
+              --target "${{ github.ref_name }}" \
+              --title "Cyber3588-AIB iStoreOS 固件（最新）" \
+              --notes "由 build.yml 自动构建并滚动更新，本 Release 始终是最新固件。下载 *-squashfs-sysupgrade.img.gz 后可在 LuCI「系统 → 备份/升级」一键刷写。"
+          fi
+          # 覆盖上传最新产物（只发固件本体 + manifest + 校验和 + IB 状态）
+          gh release upload "$TAG" -R "$REPO" --clobber \
+            *-squashfs-sysupgrade.img.gz \
+            *.manifest \
+            SHA256SUMS.txt \
+            ib-source-sha256.txt
+          echo "✅ 已发布/更新 Release: $TAG"
+          gh release view "$TAG" -R "$REPO" --json tagName,updatedAt,assets \
+            --jq '{tagName,updatedAt,assets:[.assets[].name]}'
