@@ -376,5 +376,6 @@ jobs:
             SHA256SUMS.txt \
             ib-source-sha256.txt
           echo "✅ 已发布/更新 Release: $TAG"
-          gh release view "$TAG" -R "$REPO" --json tagName,updatedAt,assets \
-            --jq '{tagName,updatedAt,assets:[.assets[].name]}'
+          # 纯展示，加 || 兜底：即使 gh 字段/网络异常也不影响已完成的发布
+          gh release view "$TAG" -R "$REPO" --json tagName,url,assets \
+            --jq '{tagName,url,assets:[.assets[].name]}' || echo "(发布已完成，view 校验忽略)"
