@@ -108,7 +108,9 @@ git push -u origin main
 
 构建完成后：
 
-- **Release（推荐）**：仓库 → Releases → **`firmware`**（滚动 tag，永远是最新固件），下载 `*-squashfs-sysupgrade.img.gz`。
+- **Release（推荐）**：仓库 → Releases，下载 `*-squashfs-sysupgrade.img.gz`：
+  - **`firmware`**（滚动 tag）——永远是最新固件，日常下载这个。
+  - **`vYYYY.MM.DD`**（日期 tag；同日多次构建自动追加 `.<run号>`）——**历史版本，永久保留**，新固件出问题时刷回任意旧版本。
 - **Artifacts**：run 页面底部，每次 run 的临时产物（保留 30 天）。
 
 ### workflow_dispatch 参数
@@ -125,10 +127,10 @@ git push -u origin main
 
 ## 四、自动更新机制
 
-- **串行化**：所有构建进同一个 concurrency 组（`cancel-in-progress: false`），同一时刻只跑一个，其余排队，避免并发写覆盖同一个滚动 Release。
+- **串行化**：所有构建进同一个 concurrency 组（`cancel-in-progress: false`），同一时刻只跑一个，其余排队，避免并发覆盖滚动 Release / 抢同一日期 tag。
 - **定时门控**（`check-upstream` job，仅 schedule 触发）：拉取官方 IB 的 `sha256sums`，与上次构建记录比对——记录存在 `firmware` Release 的 **`ib-source-sha256.txt`** 资产里（**不进 git 树**）。哈希不同或首次运行才触发构建，否则跳过。
 - **push / 手动**：`check-upstream` 跳过，`build` 总是执行。
-- **发布**：每次构建末尾把固件 + manifest + SHA256SUMS + ib-source-sha256.txt 用 `--clobber` 覆盖上传到 `firmware` Release。
+- **发布**：每次构建末尾发两类 Release——① **日期 Release**（`vYYYY.MM.DD`，新建、永久保留做历史/回滚，绝不覆盖旧 tag）；② **滚动 `firmware` Release**（`--clobber` 覆盖为最新，并存放门控状态文件）。两者都含固件 + manifest + SHA256SUMS + ib-source-sha256.txt。
 
 **构建自检**：`make image` 后会对 manifest 逐项断言——管理页必需包必须在、recipe 剔除项必须不在、设备驱动包（r8169/nvme/rknpu）必须在；任一不满足直接 fail，避免「刷完卡才发现」。
 

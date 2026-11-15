@@ -16,8 +16,11 @@ name: Build iStoreOS for Cyber3588-AIB
 #
 # 构建产物：
 #   - 每次 run 的临时 artifact（actions/upload-artifact，保留 30 天）
-#   - 固定滚动 Release（tag: firmware，每次 --clobber 覆盖为最新固件）。
-#     里面的 *-squashfs-sysupgrade.img.gz 可在 LuCI「系统 → 备份/升级」一键刷写。
+#   - 日期 Release（tag: vYYYY.MM.DD；同日多次构建追加 .<run号> 保证唯一）：永久
+#     保留做历史/回滚，出问题可刷回任意旧版本。
+#   - 固定滚动 Release（tag: firmware，每次 --clobber 覆盖为最新固件）：稳定的
+#     「永远最新」入口，并存放定时门控用的 ib-source-sha256.txt 状态记录。
+#     两类 Release 里的 *-squashfs-sysupgrade.img.gz 均可在 LuCI「系统 → 备份/升级」一键刷写。
 # ─────────────────────────────────────────────────────────────
 
 on:
@@ -56,8 +59,9 @@ on:
     # 每天 03:23 UTC 检查官方 IB 是否更新（见 check-upstream job），有更新才构建
     - cron: '23 3 * * *'
 
-# 固定滚动 Release（tag: firmware）用 --clobber 覆盖，两个并发构建会互相覆盖，
-# 故串行化：同一时刻只跑一个构建，其余排队（cancel-in-progress:false，不取消在跑的）。
+# 滚动 Release（tag: firmware）用 --clobber 覆盖、日期 Release 需先查同名 tag 是否已
+# 存在，两个并发构建会互相覆盖 / 抢同一日期 tag，故串行化：同一时刻只跑一个构建，
+# 其余排队（cancel-in-progress:false，不取消在跑的）。
 concurrency:
   group: firmware-build
   cancel-in-progress: false
@@ -415,22 +419,40 @@ jobs:
           path: out/
           retention-days: 30
 
-      - name: "Publish firmware to Release (rolling tag firmware)"
+      - name: "Publish firmware to Releases (dated history + rolling latest)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          TAG=firmware
           REPO="${{ github.repository }}"
           cd "${{ github.workspace }}/out"
           # 写入本次构建对应的上游 IB 哈希 —— 定时 check-upstream 的状态记录
           echo "${IB_SHA:-unknown}" > ib-source-sha256.txt
-          # Release 不存在则创建（滚动 tag，标题/说明固定）
+
+          # ── 1) 日期 Release：永久保留做历史 / 回滚 ──
+          DATE=$(date -u +%Y.%m.%d)
+          DTAG="v$DATE"
+          # 同一天多次构建：日期 tag 已存在则追加 run 号，保证唯一、绝不覆盖旧历史
+          if gh release view "$DTAG" -R "$REPO" >/dev/null 2>&1; then
+            DTAG="v$DATE.${{ github.run_number }}"
+          fi
+          gh release create "$DTAG" -R "$REPO" \
+            --target "${{ github.ref_name }}" \
+            --title "Cyber3588-AIB iStoreOS 固件 $DATE" \
+            --notes "构建于 $DATE (UTC)，commit ${{ github.sha }}，上游 IB sha256 ${IB_SHA:-unknown}。历史版本，永久保留以便回滚。下载 *-squashfs-sysupgrade.img.gz 后在 LuCI「系统 → 备份/升级」刷写。" \
+            *-squashfs-sysupgrade.img.gz \
+            *.manifest \
+            SHA256SUMS.txt \
+            ib-source-sha256.txt
+          echo "✅ 已创建日期 Release: $DTAG"
+
+          # ── 2) 滚动 firmware Release：永远最新 + 定时门控状态记录 ──
+          TAG=firmware
           if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
             gh release create "$TAG" -R "$REPO" \
               --target "${{ github.ref_name }}" \
               --title "Cyber3588-AIB iStoreOS 固件（最新）" \
-              --notes "由 build.yml 自动构建并滚动更新，本 Release 始终是最新固件。下载 *-squashfs-sysupgrade.img.gz 后可在 LuCI「系统 → 备份/升级」一键刷写。"
+              --notes "由 build.yml 自动构建并滚动更新，本 Release 始终是最新固件；历史版本见各日期 Release（tag vYYYY.MM.DD）。下载 *-squashfs-sysupgrade.img.gz 后可在 LuCI「系统 → 备份/升级」一键刷写。"
           fi
           # 覆盖上传最新产物（只发固件本体 + manifest + 校验和 + IB 状态）
           gh release upload "$TAG" -R "$REPO" --clobber \
@@ -438,7 +460,8 @@ jobs:
             *.manifest \
             SHA256SUMS.txt \
             ib-source-sha256.txt
-          echo "✅ 已发布/更新 Release: $TAG"
+          echo "✅ 已更新滚动 Release: $TAG"
+
           # 纯展示，加 || 兜底：即使 gh 字段/网络异常也不影响已完成的发布
-          gh release view "$TAG" -R "$REPO" --json tagName,url,assets \
+          gh release view "$DTAG" -R "$REPO" --json tagName,url,assets \
             --jq '{tagName,url,assets:[.assets[].name]}' || echo "(发布已完成，view 校验忽略)"
