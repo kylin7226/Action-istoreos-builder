@@ -1,0 +1,2 @@
+config samwaf 'config'
+	option port '26666'

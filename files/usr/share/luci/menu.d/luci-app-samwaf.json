@@ -1,0 +1,10 @@
+{
+	"admin/services/samwaf": {
+		"title": "SamWaf 防火墙",
+		"order": 65,
+		"action": {
+			"type": "view",
+			"path": "samwaf"
+		}
+	}
+}

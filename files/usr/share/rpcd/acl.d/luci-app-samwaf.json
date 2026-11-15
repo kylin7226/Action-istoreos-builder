@@ -1,0 +1,21 @@
+{
+	"luci-app-samwaf": {
+		"description": "Grant access to SamWaf management",
+		"read": {
+			"ubus": {
+				"file": [ "exec", "read", "stat", "list" ]
+			},
+			"file": {
+				"/usr/libexec/samwafctl": [ "exec" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"file": [ "exec" ]
+			},
+			"file": {
+				"/usr/libexec/samwafctl": [ "exec" ]
+			}
+		}
+	}
+}

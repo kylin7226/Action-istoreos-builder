@@ -41,6 +41,11 @@ on:
         required: false
         default: true
         type: boolean
+      include_samwaf:
+        description: '集成 SamWaf（Web 应用防火墙，静态二进制 + procd 服务，默认端口 26666）'
+        required: false
+        default: true
+        type: boolean
   push:
     branches: [main, master]
     paths:
@@ -64,6 +69,9 @@ env:
   IB_BASE: https://fw.koolcenter.com/iStoreOS/ib/rk3xxx
   IB_FILE: istoreos-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst
   PROFILE: cyber_cyber3588-aib
+  # SamWaf（开源轻量 WAF，静态 aarch64 Go 二进制，musl 兼容）固定版本。
+  # 官方把 v1.3.24 视作正式线；升级只需改这一行（tag 名，带前导 v）。
+  SAMWAF_VERSION: v1.3.24
 
 jobs:
   # ── 定时任务专用：检测官方 ImageBuilder 是否更新 ──────────────
@@ -271,6 +279,61 @@ jobs:
             cp -a "${{ github.workspace }}/files/." "$FILES/"
           fi
           find "$FILES" -type f
+
+      - name: Install SamWaf (static arm64 binary from official release)
+        run: |
+          set -e
+          # 二进制不入 git 树，构建时按 SAMWAF_VERSION 从官方 GitHub release 拉取，
+          # 校验 sha256 后装进 files-overlay 的 /usr/bin/samwaf。
+          # init 脚本(files/etc/init.d/samwaf) 与首启启用脚本(files/etc/uci-defaults/99-samwaf)
+          # 已在上一步随仓库 files/ 合并进 overlay。
+          FILES="${{ runner.temp }}/files-overlay"
+          INIT="$FILES/etc/init.d/samwaf"
+          UCIDEF="$FILES/etc/uci-defaults/99-samwaf"
+          # push/定时触发时 inputs 为空，用 != "false" 语义默认装上
+          if [ "${{ inputs.include_samwaf }}" = "false" ]; then
+            echo "⏭️ include_samwaf=false：移除 SamWaf 服务桩 + LuCI 管理页，不安装二进制"
+            rm -f  "$INIT" "$UCIDEF" "$FILES/usr/bin/samwaf" "$FILES/etc/config/samwaf"
+            rm -f  "$FILES/usr/libexec/samwafctl"
+            rm -f  "$FILES/usr/share/luci/menu.d/luci-app-samwaf.json"
+            rm -f  "$FILES/usr/share/rpcd/acl.d/luci-app-samwaf.json"
+            rm -f  "$FILES/www/luci-static/resources/view/samwaf.js"
+            rm -rf "$FILES/usr/share/samwaf"
+            exit 0
+          fi
+          VER="$SAMWAF_VERSION"
+          NUM="${VER#v}"   # checksums 文件名不含前导 v
+          BASE="https://github.com/samwafgo/SamWaf/releases/download/${VER}"
+          TARBALL="SamWaf_Linux_arm64.${VER}.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o "$TARBALL" "$BASE/$TARBALL"
+          curl -fL --retry 3 -o samwaf_checksums.txt "$BASE/SamWaf_${NUM}_checksums.txt"
+          # 上游 checksums.txt 里的文件名用了空格（与实际资产的点不一致），
+          # 故不能 sha256sum -c，只取 arm64 行的 hash 单独比对。
+          WANT=$(grep -i 'Linux_arm64' samwaf_checksums.txt | awk '{print $1}' | head -1)
+          GOT=$(sha256sum "$TARBALL" | awk '{print $1}')
+          echo "SamWaf ${VER} 期望 sha256: $WANT"
+          echo "SamWaf ${VER} 实际 sha256: $GOT"
+          if [ -z "$WANT" ] || [ "$WANT" != "$GOT" ]; then
+            echo "❌ SamWaf 校验失败，终止构建"; exit 1
+          fi
+          tar -xzf "$TARBALL"
+          BIN=$(find . -maxdepth 2 -type f -name 'SamWafLinux*' | head -1)
+          if [ -z "$BIN" ]; then echo "❌ 解包后找不到 SamWafLinux* 二进制"; exit 1; fi
+          # 确认是静态 aarch64 ELF（musl 兼容的关键），防止上游改了构建方式
+          FILEINFO=$(file "$BIN")
+          echo "$FILEINFO"
+          echo "$FILEINFO" | grep -q 'ARM aarch64' || { echo "❌ 不是 aarch64 二进制"; exit 1; }
+          echo "$FILEINFO" | grep -q 'statically linked' || { echo "❌ 不是静态链接，可能与 musl 不兼容"; exit 1; }
+          mkdir -p "$FILES/usr/bin"
+          install -m 0755 "$BIN" "$FILES/usr/bin/samwaf"
+          # 记录装入版本，供 LuCI 管理页显示（设备端升级成功后由 samwafctl 覆盖此文件）
+          mkdir -p "$FILES/usr/share/samwaf"
+          echo "$VER" > "$FILES/usr/share/samwaf/VERSION"
+          # 确保服务脚本与 LuCI 后端助手可执行（cp -a 已保留权限，这里双保险）
+          chmod 0755 "$INIT" "$UCIDEF" "$FILES/usr/libexec/samwafctl" 2>/dev/null || true
+          ls -lh "$FILES/usr/bin/samwaf"
+          echo "✅ SamWaf ${VER} 已装入 overlay:/usr/bin/samwaf（首启自动 enable+start，LuCI「服务→SamWaf 防火墙」或 :26666 管理）"
 
       - name: Build image
         run: |

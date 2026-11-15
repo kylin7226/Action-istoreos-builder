@@ -1,0 +1,175 @@
+#!/bin/sh
+# samwafctl —— SamWaf 在 LuCI 里的后端助手。
+# 由 luci-app-samwaf 通过 rpcd 的 file.exec 以 root 调用，前端只负责渲染。
+#
+# 约定：
+#   - 每个子命令向 stdout 输出「单行 JSON」，供前端 JSON.parse。
+#   - 只接受固定子命令；端口按整数校验、版本号按白名单正则校验，杜绝注入。
+#   - 服务启停一律走 procd 的 /etc/init.d/samwaf，绝不调用 SamWaf 自带的
+#     install/start/stop（那是给 systemd 的，OpenWrt 无 systemd）。
+#
+# 需要在真机上验证的假设（文档未明确、离线无法确认）：
+#   1) resetpwd 可被管道喂空行（选中默认 admin）——若它检查 isatty 则会失败，
+#      此时前端会回传原始输出，用户可改用 ttyd/SSH 手动执行。
+#   2) conf/config.yml 可只含 local_port 一行（SamWaf 用内置默认补全其余字段）。
+
+SELF=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
+PROG=/usr/bin/samwaf
+WORKDIR=/opt/samwaf
+INIT=/etc/init.d/samwaf
+VERFILE=/usr/share/samwaf/VERSION
+PWFILE="$WORKDIR/data/initial_password.txt"
+UPDIR="$WORKDIR/.upgrade"
+UPLOG="$UPDIR/upgrade.log"
+UPPID="$UPDIR/pid"
+REPO_BASE="https://github.com/samwafgo/SamWaf/releases/download"
+
+out() { printf '%s\n' "$1"; }
+
+cur_port() {
+	p=$(uci -q get samwaf.config.port 2>/dev/null)
+	[ -n "$p" ] && printf '%s' "$p" || printf '26666'
+}
+is_running() { pidof samwaf >/dev/null 2>&1 && printf 'true' || printf 'false'; }
+cur_pid()    { pidof samwaf 2>/dev/null | awk '{print $1}'; }
+is_enabled() { [ -x "$INIT" ] && "$INIT" enabled >/dev/null 2>&1 && printf 'true' || printf 'false'; }
+cur_ver()    { [ -f "$VERFILE" ] && cat "$VERFILE" 2>/dev/null | tr -d '\n' || printf 'unknown'; }
+
+status_json() {
+	pid=$(cur_pid); [ -n "$pid" ] || pid=0
+	printf '{"running":%s,"pid":%s,"enabled":%s,"port":%s,"version":"%s","initial_password_exists":%s}\n' \
+		"$(is_running)" "$pid" "$(is_enabled)" "$(cur_port)" "$(cur_ver)" \
+		"$([ -f "$PWFILE" ] && printf 'true' || printf 'false')"
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+status)
+	status_json
+	;;
+
+start|stop|restart)
+	[ "$cmd" = "start" ] && sync_cfg
+	"$INIT" "$cmd" >/dev/null 2>&1
+	sleep 1
+	status_json
+	;;
+
+enable|disable)
+	"$INIT" "$cmd" >/dev/null 2>&1
+	status_json
+	;;
+
+set_port)
+	p=${1:-}
+	case "$p" in
+	''|*[!0-9]*) out '{"ok":false,"error":"端口必须是纯数字"}'; exit 1 ;;
+	esac
+	if [ "$p" -lt 1 ] || [ "$p" -gt 65535 ]; then
+		out '{"ok":false,"error":"端口需在 1-65535 之间"}'; exit 1
+	fi
+	uci -q set samwaf.config.port="$p"
+	uci -q commit samwaf
+	restarted=false
+	if [ "$(is_running)" = "true" ]; then
+		"$INIT" restart >/dev/null 2>&1   # restart 内的 start 会把新端口同步进 config.yml
+		restarted=true
+		sleep 1
+	fi
+	printf '{"ok":true,"port":%s,"restarted":%s}\n' "$p" "$restarted"
+	;;
+
+resetpwd)
+	# resetpwd 交互式、且只能生成随机密码（无法自定义），用户名固定 admin。
+	# 为避免与运行中进程的 SQLite 写冲突：先停服务，喂一个空行选中默认 admin，再启动。
+	was_running=$(is_running)
+	[ "$was_running" = "true" ] && "$INIT" stop >/dev/null 2>&1
+	mkdir -p "$WORKDIR"
+	# timeout 防止 resetpwd 等待 TTY 输入时把 RPC 挂死（busybox 一般自带 timeout）
+	if command -v timeout >/dev/null 2>&1; then TO="timeout 20"; else TO=""; fi
+	raw=$(cd "$WORKDIR" && printf '\n' | $TO "$PROG" resetpwd 2>&1)
+	pw=$(printf '%s' "$raw" | awk '/new password is:/{getline; gsub(/^[ \t]+|[ \t]+$/,""); print; exit}')
+	[ "$was_running" = "true" ] && "$INIT" start >/dev/null 2>&1
+	if [ -n "$pw" ]; then
+		printf '{"ok":true,"password":"%s"}\n' "$pw"
+	else
+		safe=$(printf '%s' "$raw" | tr '\n' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+		printf '{"ok":false,"error":"未能解析新密码（resetpwd 可能需要 TTY）。原始输出见 raw","raw":"%s"}\n' "$safe"
+	fi
+	;;
+
+upgrade)
+	ver=${1:-}
+	echo "$ver" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$' || {
+		out '{"ok":false,"error":"版本号格式不正确（示例 v1.3.24）"}'; exit 1; }
+	if [ -f "$UPPID" ] && kill -0 "$(cat "$UPPID" 2>/dev/null)" 2>/dev/null; then
+		out '{"ok":false,"error":"已有升级任务在进行中"}'; exit 1
+	fi
+	mkdir -p "$UPDIR"
+	: > "$UPLOG"
+	nohup "$SELF" _upgrade "$ver" >>"$UPLOG" 2>&1 &
+	echo $! > "$UPPID"
+	printf '{"ok":true,"started":true,"version":"%s"}\n' "$ver"
+	;;
+
+_upgrade)
+	# 后台执行体：下载 → 校验 → 原子替换 → 重启。进度与最终结果写入 $UPLOG。
+	ver=${1:-}
+	num=${ver#v}
+	base="$REPO_BASE/${ver}"
+	tarball="SamWaf_Linux_arm64.${ver}.tar.gz"
+	rm -rf "$UPDIR/work"; mkdir -p "$UPDIR/work"
+	cd "$UPDIR/work" || { echo "=== DONE fail 无法进入工作目录"; exit 1; }
+	echo "--- 下载 ${tarball}"
+	curl -fL --retry 3 --connect-timeout 20 -o "$tarball" "$base/$tarball" \
+		|| { echo "=== DONE fail 下载失败（检查网络 / GitHub 可达性 / 版本号是否存在）"; exit 1; }
+	curl -fL --retry 3 -o checksums.txt "$base/SamWaf_${num}_checksums.txt" \
+		|| { echo "=== DONE fail 下载校验文件失败"; exit 1; }
+	want=$(grep -i 'Linux_arm64' checksums.txt | awk '{print $1}' | head -1)
+	got=$(sha256sum "$tarball" | awk '{print $1}')
+	echo "--- sha256 期望 $want"
+	echo "--- sha256 实际 $got"
+	[ -n "$want" ] && [ "$want" = "$got" ] || { echo "=== DONE fail sha256 校验不通过"; exit 1; }
+	tar -xzf "$tarball" || { echo "=== DONE fail 解包失败"; exit 1; }
+	bin=$(find . -maxdepth 2 -type f -name 'SamWafLinux*' | head -1)
+	[ -n "$bin" ] || { echo "=== DONE fail 解包后找不到 SamWafLinux* 二进制"; exit 1; }
+	if command -v file >/dev/null 2>&1; then
+		info=$(file "$bin")
+		echo "$info" | grep -q 'ARM aarch64'      || { echo "=== DONE fail 不是 aarch64 二进制"; exit 1; }
+		echo "$info" | grep -q 'statically linked' || { echo "=== DONE fail 不是静态链接（可能与 musl 不兼容）"; exit 1; }
+	fi
+	echo "--- 停止服务并替换二进制"
+	"$INIT" stop >/dev/null 2>&1
+	if cp "$bin" /usr/bin/samwaf.new && chmod 0755 /usr/bin/samwaf.new && mv /usr/bin/samwaf.new "$PROG"; then
+		echo "$ver" > "$VERFILE" 2>/dev/null
+		"$INIT" start >/dev/null 2>&1
+		cd /; rm -rf "$UPDIR/work"
+		echo "=== DONE ok $ver"
+	else
+		rm -f /usr/bin/samwaf.new
+		"$INIT" start >/dev/null 2>&1
+		echo "=== DONE fail 替换二进制失败（已回滚到原版本并重启）"
+		exit 1
+	fi
+	;;
+
+upgrade_status)
+	running=false
+	[ -f "$UPPID" ] && kill -0 "$(cat "$UPPID" 2>/dev/null)" 2>/dev/null && running=true
+	logb64=""
+	[ -f "$UPLOG" ] && logb64=$(base64 "$UPLOG" 2>/dev/null | tr -d '\n')
+	done=null
+	if [ -f "$UPLOG" ]; then
+		if   grep -q '=== DONE ok'   "$UPLOG"; then done=true
+		elif grep -q '=== DONE fail' "$UPLOG"; then done=false
+		fi
+	fi
+	printf '{"running":%s,"done":%s,"log_b64":"%s"}\n' "$running" "$done" "$logb64"
+	;;
+
+help|*)
+	out '{"actions":["status","start","stop","restart","enable","disable","set_port <n>","resetpwd","upgrade <version>","upgrade_status"]}'
+	;;
+esac
