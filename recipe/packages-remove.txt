@@ -423,3 +423,57 @@ perlbase-tie
 perlbase-unicore
 perlbase-utf8
 perlbase-xsloader
+
+
+# ─────────────────────────────────────────────────────────────
+# 第四批：对照官方原始镜像(940 包)补齐的防御性剔除（2026-11）
+# 说明：以下 34 项均不在当前 317 包固件中（已逐项实测），负号为空操作；
+#       目的是防止将来官方 IB 更新把这些包加进 profile 默认包后又"偷偷回来"。
+#       已确认每一项都不是任何保留包的硬依赖（它们缺席时固件构建正常），
+#       不会触发 apk 依赖冲突。
+# ─────────────────────────────────────────────────────────────
+
+# WiFi/BT 用户态与固件（设备无 WiFi/蓝牙；内核侧 kmod-* 无线驱动前面各批已剔）
+hostapd-common
+hostapd-openssl
+wpa-cli
+wpa-supplicant-openssl
+iw
+wifi-scripts
+wireless-regdb
+brcmfmac-firmware-usb
+brcmfmac-nvram-43455-sdio
+brcmfmac-nvram-43455-sdio-generic
+cypress-firmware-43455-sdio
+mwifiex-pcie-firmware
+ucode-mod-nl80211
+
+# 隧道/代理协议残留（无 GRE/IPIP/MAP/DS-Lite/SSTP/bonding/relay/swconfig 需求；
+#   RK3588 用 DSA 而非 swconfig）
+ds-lite
+gre
+ipip
+map
+external-protocol
+sstp-client
+luci-proto-external
+luci-proto-gre
+luci-proto-ipip
+luci-proto-relay
+luci-proto-sstp
+proto-bonding
+relayd
+resolveip
+swconfig
+
+# NAS/文件共享与 Apple/依赖库残留（无 WebDAV 挂载 / iOS USB 需求；
+#   dbus/glib2 原为已剔除的 avahi 依赖，现无保留包依赖它们）
+davfs2
+usbmuxd
+dbus
+glib2
+
+# NTFS 工具（无 NTFS U 盘需求；且内核未启用 kmod-fs-ntfs3，装了也挂不了。
+#   若将来要支持 NTFS，需同时补 kmod-fs-ntfs3 并撤销下面两项）
+ntfsprogs
+ntfs3-mount
