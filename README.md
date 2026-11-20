@@ -12,6 +12,8 @@
 - 可选 Docker、dockerd、Compose、dockerman。
 - ddns-go、frpc/frps、NFS 服务、GPU/VPU/RGA 内核驱动、传感器工具。
 - 可选 SamWaf `v1.3.24` 静态 ARM64 二进制及自有 LuCI 管理页。
+- Open-Box 原生部署所需内核模块（tun/nft-queue/tproxy/socket/macvlan/ipvlan）、ip-full、BBR（开机启用）。
+- mwan3 + LuCI 负载均衡界面，支持双 PPPoE 多出口，配置见 [docs/multiwan.md](docs/multiwan.md)。
 
 容器硬件加速还需要容器内配套的用户态库和设备透传；安装内核驱动不等于已验证转码或 Redroid 能运行。
 
