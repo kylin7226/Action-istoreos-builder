@@ -1,14 +1,12 @@
 #!/bin/sh
-# 首启时启用并拉起 SamWaf（/etc/uci-defaults/* 只在首次启动运行一次，执行后系统会自动删除本脚本）。
-# enable 会创建 /etc/rc.d/S95samwaf 软链，使后续每次开机都自启；随后立即 start 一次。
-# 仅当二进制确实装入（/usr/bin/samwaf 存在）时才操作，避免 include_samwaf=false 时报错。
-if [ -x /etc/init.d/samwaf ] && [ -x /usr/bin/samwaf ]; then
-	# 兜底：确保 UCI 配置存在（正常已随镜像内置 /etc/config/samwaf）
-	if ! uci -q get samwaf.config.port >/dev/null 2>&1; then
-		mkdir -p /etc/config
-		printf "config samwaf 'config'\n\toption port '26666'\n" > /etc/config/samwaf
-	fi
-	/etc/init.d/samwaf enable
-	/etc/init.d/samwaf start
+[ -x /etc/init.d/samwaf ] && [ -x /usr/bin/samwaf ] || exit 0
+if ! uci -q get samwaf.config >/dev/null; then
+	uci set samwaf.config=samwaf || exit 1
 fi
-exit 0
+if ! uci -q get samwaf.config.port >/dev/null; then
+	uci set samwaf.config.port=26666 || exit 1
+fi
+uci commit samwaf || exit 1
+# A retained configuration may intentionally have disabled the service.
+[ -f /etc/uci-defaults/.upgrading ] && exit 0
+/etc/init.d/samwaf enable && /etc/init.d/samwaf start

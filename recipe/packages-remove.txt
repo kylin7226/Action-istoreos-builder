@@ -11,6 +11,23 @@
 #   - 剔除结果会在构建后的 manifest 校验步骤里逐项断言（应删未删 = 构建失败）
 # ─────────────────────────────────────────────────────────────
 
+# 已移除的管理入口及独占工具，避免 profile 默认包再次引入
+quickstart
+luci-app-quickstart
+luci-i18n-quickstart-zh-cn
+luci-app-diskman
+luci-i18n-diskman-zh-cn
+parted
+
+# 无线和蓝牙基础模块
+kmod-cfg80211
+kmod-mac80211
+kmod-brcmfmac
+kmod-brcmutil
+kmod-bluetooth
+bluez-daemon
+bluez-utils
+
 # ── 已从基线移除、负号双保险：WoL 网络唤醒 ──
 luci-i18n-wol-zh-cn
 luci-app-wol
@@ -449,7 +466,7 @@ mwifiex-pcie-firmware
 ucode-mod-nl80211
 
 # 隧道/代理协议残留（无 GRE/IPIP/MAP/DS-Lite/SSTP/bonding/relay/swconfig 需求；
-#   RK3588 用 DSA 而非 swconfig）
+#   当前有线网口配置不依赖 swconfig）
 ds-lite
 gre
 ipip
@@ -473,7 +490,6 @@ usbmuxd
 dbus
 glib2
 
-# NTFS 工具（无 NTFS U 盘需求；且内核未启用 kmod-fs-ntfs3，装了也挂不了。
-#   若将来要支持 NTFS，需同时补 kmod-fs-ntfs3 并撤销下面两项）
+# NTFS 工具（无 NTFS U 盘需求；将来恢复支持时需同时核对所用内核驱动）
 ntfsprogs
 ntfs3-mount

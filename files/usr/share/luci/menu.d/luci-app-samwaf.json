@@ -2,6 +2,10 @@
 	"admin/services/samwaf": {
 		"title": "SamWaf 防火墙",
 		"order": 65,
+		"depends": {
+			"acl": [ "luci-app-samwaf" ],
+			"fs": { "/usr/libexec/samwafctl": "executable" }
+		},
 		"action": {
 			"type": "view",
 			"path": "samwaf"

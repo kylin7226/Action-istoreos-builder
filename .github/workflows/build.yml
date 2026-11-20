@@ -1,467 +1,201 @@
 name: Build iStoreOS for Cyber3588-AIB
 
-# ─────────────────────────────────────────────────────────────
-# 用 iStoreOS 官方 ImageBuilder（25.12 / rockchip-armv8）为
-# Cyber Cyber3588-AIB (RK3588) 打包固件。不编译源码，几分钟出包。
-#
-# 软件包增删通过仓库根目录的 recipe/ 控制：
-#   recipe/packages-add.txt     要额外安装的包（一行一个，# 开头为注释）
-#   recipe/packages-remove.txt  要从镜像剔除的包（一行一个）
-# 两个列表当前为空 = 构建"基线固件"（官方 profile 默认包 + LuCI 管理界面套件）。
-#
-# 触发方式：
-#   1. 手动 Run workflow（可调 LAN IP / rootfs 分区大小等参数）
-#   2. 推送改动 recipe/ 或本工作流时自动构建
-#   3. 每天定时检查官方 IB 是否更新，有更新才自动重建（见 check-upstream job）
-#
-# 构建产物：
-#   - 每次 run 的临时 artifact（actions/upload-artifact，保留 30 天）
-#   - 日期 Release（tag: vYYYY.MM.DD；同日多次构建追加 .<run号> 保证唯一）：永久
-#     保留做历史/回滚，出问题可刷回任意旧版本。
-#   - 固定滚动 Release（tag: firmware，每次 --clobber 覆盖为最新固件）：稳定的
-#     「永远最新」入口，并存放定时门控用的 ib-source-sha256.txt 状态记录。
-#     两类 Release 里的 *-squashfs-sysupgrade.img.gz 均可在 LuCI「系统 → 备份/升级」一键刷写。
-# ─────────────────────────────────────────────────────────────
-
 on:
   workflow_dispatch:
     inputs:
       lan_ip:
-        description: 'LAN 管理地址（首启时由 uci-defaults 写入）'
+        description: '全新刷写的 LAN IPv4 地址（默认 /24；保留配置升级不覆盖）'
         required: true
         default: '192.168.199.1'
       rootfs_partsize:
-        description: 'rootfs 分区大小(MB)。剩余空间刷完后可另建分区挂载'
+        description: '镜像 rootfs 分区大小，512–32768 MB；实际磁盘扩容由系统处理'
         required: true
         default: '4096'
       with_gui_extras:
-        description: '集成 iStore 商店 / quickstart 首页 / 磁盘管理 / ttyd / argon 主题'
-        required: false
-        default: true
+        description: 'iStore / 软件包管理 / ttyd / UPnP / argon'
         type: boolean
+        default: true
       include_docker:
-        description: '集成 Docker + dockerman'
-        required: false
-        default: true
+        description: 'Docker + dockerman'
         type: boolean
+        default: true
       include_samwaf:
-        description: '集成 SamWaf（Web 应用防火墙，静态二进制 + procd 服务，默认端口 26666）'
-        required: false
-        default: true
+        description: 'SamWaf + LuCI 管理页'
         type: boolean
+        default: true
   push:
     branches: [main, master]
-    paths:
-      - 'recipe/**'
-      - 'files/**'
-      - '.github/workflows/build.yml'
+    paths: ['recipe/**', 'files/**', 'scripts/**', 'tests/**', '.github/workflows/build.yml']
+  pull_request:
+    paths: ['recipe/**', 'files/**', 'scripts/**', 'tests/**', '.github/workflows/build.yml']
   schedule:
-    # 每天 03:23 UTC 检查官方 IB 是否更新（见 check-upstream job），有更新才构建
     - cron: '23 3 * * *'
 
-# 滚动 Release（tag: firmware）用 --clobber 覆盖、日期 Release 需先查同名 tag 是否已
-# 存在，两个并发构建会互相覆盖 / 抢同一日期 tag，故串行化：同一时刻只跑一个构建，
-# 其余排队（cancel-in-progress:false，不取消在跑的）。
 concurrency:
-  group: firmware-build
+  group: firmware-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
   cancel-in-progress: false
 
 permissions:
-  contents: write   # 创建/更新 firmware Release 需要写权限
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 env:
   IB_BASE: https://fw.koolcenter.com/iStoreOS/ib/rk3xxx
   IB_FILE: istoreos-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst
   PROFILE: cyber_cyber3588-aib
-  # SamWaf（开源轻量 WAF，静态 aarch64 Go 二进制，musl 兼容）固定版本。
-  # 官方把 v1.3.24 视作正式线；升级只需改这一行（tag 名，带前导 v）。
   SAMWAF_VERSION: v1.3.24
 
 jobs:
-  # ── 定时任务专用：检测官方 ImageBuilder 是否更新 ──────────────
-  # 仅 schedule 触发时运行；比对上游 IB 的 sha256 与上次构建记录
-  # （记录存在 firmware Release 的 ib-source-sha256.txt 资产里，不进 git 树）。
-  # push / 手动 dispatch 时本 job 跳过，build 照常执行（见 build.if）。
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s tests -v
+      - run: node tests/samwaf.test.js
+
   check-upstream:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
-    permissions:
-      contents: read
     outputs:
-      changed: ${{ steps.chk.outputs.changed }}
+      changed: ${{ steps.check.outputs.changed }}
     steps:
-      - name: Compare upstream IB sha256 with last build
-        id: chk
+      - id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-          UP=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$IB_BASE/sha256sums" | grep imagebuilder | awk '{print $1}')
-          if [ -z "$UP" ]; then echo "❌ 取不到上游 sha256sums"; exit 1; fi
-          echo "上游 IB sha256 : $UP"
-          LAST=""
-          if gh release download firmware -R "${{ github.repository }}" --pattern ib-source-sha256.txt --dir /tmp/ibstate >/dev/null 2>&1; then
-            LAST=$(tr -d '[:space:]' < /tmp/ibstate/ib-source-sha256.txt 2>/dev/null || true)
+          curl -fsSL --retry 5 --max-time 120 "$IB_BASE/sha256sums" -o "$RUNNER_TEMP/sha256sums"
+          UP=$(awk -v file="$IB_FILE" '$2 == file || $2 == "*" file { print $1 }' "$RUNNER_TEMP/sha256sums")
+          [[ "$UP" =~ ^[0-9a-f]{64}$ ]]
+          LAST=''
+          if gh release download firmware -R "$GITHUB_REPOSITORY" --pattern ib-source-sha256.txt --dir "$RUNNER_TEMP/last"; then
+            LAST=$(tr -d '[:space:]' < "$RUNNER_TEMP/last/ib-source-sha256.txt")
           fi
-          echo "上次构建 sha256: ${LAST:-<无记录（首次）>}"
-          if [ -z "$LAST" ] || [ "$LAST" != "$UP" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "✅ 官方 IB 有更新或首次运行 → 触发构建"
+          if [ "$UP" = "$LAST" ]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️ 官方 IB 未变化 → 跳过本次构建"
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
 
   build:
-    needs: check-upstream
-    # 非定时（push/手动）总是构建；定时仅在 check-upstream 判定有更新时构建。
-    # always() 保证 check-upstream 被跳过（非 schedule）时 build 仍能运行。
-    if: ${{ always() && (github.event_name != 'schedule' || needs.check-upstream.outputs.changed == 'true') }}
+    needs: [test, check-upstream]
+    if: ${{ !cancelled() && needs.test.result == 'success' && github.event_name != 'pull_request' && (github.event_name != 'schedule' || needs.check-upstream.outputs.changed == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 90
-
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          sudo apt-get clean || true
-          df -h /
-
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate inputs and prepare package list and overlay
+        env:
+          LAN_IP: ${{ inputs.lan_ip }}
+          ROOTFS_PARTSIZE: ${{ inputs.rootfs_partsize }}
+          WITH_GUI_EXTRAS: ${{ inputs.with_gui_extras }}
+          INCLUDE_DOCKER: ${{ inputs.include_docker }}
+          INCLUDE_SAMWAF: ${{ inputs.include_samwaf }}
+        run: python3 scripts/build-support.py configure
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential gawk libncurses-dev zlib1g-dev git gettext \
-            libssl-dev xsltproc rsync wget curl file unzip tar zstd xz-utils \
-            python3 python3-setuptools openssl
-
-      - name: Download official ImageBuilder + verify checksum
-        working-directory: ${{ runner.temp }}
+          sudo apt-get install -y --no-install-recommends build-essential gawk libncurses-dev zlib1g-dev git gettext libssl-dev xsltproc rsync wget curl file unzip tar zstd xz-utils python3 python3-setuptools openssl
+      - name: Download and verify ImageBuilder
         run: |
           cd "$RUNNER_TEMP"
-          curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o "$IB_FILE" "$IB_BASE/$IB_FILE"
-          curl -fL -o sha256sums "$IB_BASE/sha256sums"
-          grep imagebuilder sha256sums | sha256sum -c -
-          # 记录本次构建所用上游 IB 的 sha256：发布步骤会写进 Release 状态资产，
-          # 供定时 check-upstream 下次比对（判断官方是否又更新了）
-          IB_SHA=$(grep imagebuilder sha256sums | awk '{print $1}')
+          curl -fL --retry 5 --max-time 1800 -o "$IB_FILE" "$IB_BASE/$IB_FILE"
+          curl -fL --retry 3 --max-time 120 -o sha256sums "$IB_BASE/sha256sums"
+          IB_SHA=$(awk -v file="$IB_FILE" '$2 == file || $2 == "*" file { print $1 }' sha256sums)
+          [[ "$IB_SHA" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$IB_SHA" "$IB_FILE" | sha256sum -c -
+          printf '%s  %s\n' "$IB_SHA" "$IB_FILE" > source-checksums.txt
           echo "IB_SHA=$IB_SHA" >> "$GITHUB_ENV"
-          echo "本次 IB sha256: $IB_SHA"
-          ls -lh "$IB_FILE"
-
-      - name: Extract ImageBuilder
-        run: |
-          cd "$RUNNER_TEMP"
           tar --zstd -xf "$IB_FILE"
-          IB_DIR=$(ls -d "$RUNNER_TEMP"/istoreos-imagebuilder-*/ | head -1)
-          IB_DIR="${IB_DIR%/}"
-          echo "IB_DIR=$IB_DIR" >> "$GITHUB_ENV"
-          echo "解压到: $IB_DIR"
-
-      - name: Verify target profile exists (fail fast)
+          dirs=("$RUNNER_TEMP"/istoreos-imagebuilder-*/)
+          [ "${#dirs[@]}" = 1 ] && [ -d "${dirs[0]}" ]
+          echo "IB_DIR=${dirs[0]%/}" >> "$GITHUB_ENV"
+      - name: Check profile and fetch signed third-party packages
         run: |
           cd "$IB_DIR"
-          make info > ib-info.txt 2>&1 || true
-          if grep -q "^${PROFILE}:" ib-info.txt; then
-            grep -A3 "^${PROFILE}:" ib-info.txt
-            echo "✅ profile 存在"
-          else
-            echo "❌ 该 ImageBuilder 里没有 ${PROFILE}"
-            grep -E "^[a-z0-9_-]+:" ib-info.txt | head -120
-            exit 1
+          make info > "$RUNNER_TEMP/ib-info.txt" 2>&1
+          grep -q "^${PROFILE}:" "$RUNNER_TEMP/ib-info.txt"
+          APK="$IB_DIR/staging_dir/host/bin/apk"
+          mkdir -p "$RUNNER_TEMP/feed-packages" "$RUNNER_TEMP/apk-root"
+          mapfile -t requested < <(python3 - "$RUNNER_TEMP/build-config.json" <<'PY'
+          import json, sys
+          supported = {'ddns-go', 'luci-app-ddns-go', 'frpc', 'frps', 'luci-app-frpc', 'luci-app-frps', 'luci-app-mosdns', 'geo2txt', 'v2ray-geoip', 'v2ray-geosite'}
+          print('\n'.join(sorted(set(json.load(open(sys.argv[1]))['required']) & supported)))
+          PY
+          )
+          if [ -n "${requested[0]:-}" ]; then
+            "$APK" --root "$RUNNER_TEMP/apk-root" --arch aarch64_generic \
+              --keys-dir "$GITHUB_WORKSPACE/files/etc/apk/keys" \
+              --repositories-file "$GITHUB_WORKSPACE/files/etc/apk/repositories.d/dllkids-feed.list" \
+              --cache=no fetch --output "$RUNNER_TEMP/feed-packages" "${requested[@]}"
+            for package in "$RUNNER_TEMP/feed-packages/"*.apk; do
+              sha256sum "$package" | sed "s|$RUNNER_TEMP/feed-packages/||" >> "$RUNNER_TEMP/source-checksums.txt"
+              cp "$package" packages/
+            done
           fi
-
-      - name: Inject third-party feed packages into IB
+      - name: Install verified SamWaf binary
         run: |
-          # dllkids feed 里的包 IB 本地仓库没有，下载 .apk 放进 packages/，
-          # IB 构建时会 apk mkndx --allow-untrusted 自动重建索引。
-          # 要注入哪些包由 recipe/packages-add.txt 决定（这里只处理已知的映射）。
-          cd "$IB_DIR"
-          FEED="https://down.dllkids.xyz/openwrt-feed/25.12/aarch64_generic"
-          ADD="$(grep -v '^\s*#' "${{ github.workspace }}/recipe/packages-add.txt" | grep -v '^\s*$' || true)"
-          LIST=$(curl -fsSL --retry 3 "$FEED/")
-          inject() {  # $1 = 文件名匹配前缀（避免 ddns-go 匹配到 luci-app-ddns-go）
-            # 用 [>/] 锚定文件名开头：feed 的 HTML 里每个 .apk 前面必是 > 或 /，
-            # 而 luci-app-frpc-1.4.apk 里的子串 "frpc-" 前面是 -，不会被误匹配。
-            F=$(echo "$LIST" | grep -oE "[>/]$1[0-9][^\"<>]*\.apk" | sed 's#^[>/]##' | sort -u | tail -1)
-            if [ -z "$F" ]; then echo "❌ feed 里找不到 $1*"; exit 1; fi
-            echo "下载 $F"
-            curl -fsSL --retry 3 -o "packages/$F" "$FEED/$F"
-            ls -lh "packages/$F"
-          }
-          echo "$ADD" | grep -qx "ddns-go" && inject "ddns-go-"
-          echo "$ADD" | grep -qx "luci-app-ddns-go" && inject "luci-app-ddns-go-"
-          echo "$ADD" | grep -qx "luci-app-mosdns" && inject "luci-app-mosdns-"
-          echo "$ADD" | grep -qx "geo2txt" && inject "geo2txt-"
-          echo "$ADD" | grep -qx "v2ray-geoip" && inject "v2ray-geoip-"
-          echo "$ADD" | grep -qx "v2ray-geosite" && inject "v2ray-geosite-"
-          echo "$ADD" | grep -qx "frpc" && inject "frpc-"
-          echo "$ADD" | grep -qx "frps" && inject "frps-"
-          echo "$ADD" | grep -qx "luci-app-frpc" && inject "luci-app-frpc-"
-          echo "$ADD" | grep -qx "luci-app-frps" && inject "luci-app-frps-"
-          exit 0
-
-      - name: Compose package list (base + recipe)
-        id: pkgs
-        run: |
-          # ─────────────────────────────────────────────────────────────
-          # 管理页是「可选包」，不写就没有：IB 只保证 profile 的
-          # DEFAULT_PACKAGES（内核/驱动/dnsmasq/firewall4/dropbear…），
-          # uhttpd 和 luci-mod-* 必须显式列出，否则固件能开机但 80 端口
-          # 无人监听、进不去后台，且构建全程不报错。
-          #
-          # PACKAGES= 是「追加」语义：profile 默认包（kmod-r8169/kmod-nvme/
-          # kmod-rknpu/GPU/VPU 等）始终保留；前缀 - 的包名做剔除。
-          # ─────────────────────────────────────────────────────────────
-
-          # ── 管理界面底座 ──
-          P="uhttpd uhttpd-mod-ubus rpcd-mod-luci"
-          P="$P luci luci-light luci-mod-admin-full"
-          P="$P luci-app-firewall luci-i18n-firewall-zh-cn"
-          P="$P luci-proto-ppp luci-i18n-base-zh-cn"
-
-          if [ "${{ inputs.with_gui_extras }}" != "false" ]; then
-            P="$P istoreos-files luci-app-store luci-lib-taskd taskd"
-            P="$P luci-app-package-manager luci-i18n-package-manager-zh-cn"
-            P="$P luci-app-ttyd luci-i18n-ttyd-zh-cn"
-            P="$P luci-app-upnp luci-i18n-upnp-zh-cn"
-            P="$P luci-theme-argon luci-app-argon-config"
-            P="$P luci-i18n-argon-zh-cn luci-i18n-argon-config-zh-cn"
-          fi
-          # quickstart / diskman 及其专属依赖（smartmontools、mdadm、parted 等）
-          # 已按精简需求移除，见 recipe/packages-remove.txt 的分析记录。
-
-          # 注意用 != "false"：push/定时触发时 inputs 为空，也应带上 Docker
-          if [ "${{ inputs.include_docker }}" != "false" ]; then
-            P="$P docker dockerd docker-compose"
-            P="$P luci-app-dockerman luci-i18n-dockerman-zh-cn"
-          fi
-
-          # ── recipe/packages-add.txt：追加安装 ──
-          if [ -s recipe/packages-add.txt ]; then
-            ADD=$(grep -v '^\s*#' recipe/packages-add.txt | grep -v '^\s*$' | tr '\n' ' ')
-            echo "recipe 追加: $ADD"
-            P="$P $ADD"
-          fi
-
-          # ── recipe/packages-remove.txt：剔除（转成 -pkg 负号语法）──
-          if [ -s recipe/packages-remove.txt ]; then
-            REM=$(grep -v '^\s*#' recipe/packages-remove.txt | grep -v '^\s*$' | sed 's/^\s*//;s/\s*$//;s/^/-/' | tr '\n' ' ')
-            echo "recipe 剔除: $REM"
-            P="$P $REM"
-            echo "removed=$REM" >> "$GITHUB_OUTPUT"
-          else
-            echo "removed=" >> "$GITHUB_OUTPUT"
-          fi
-
-          P=$(echo "$P" | tr -s ' ' | sed 's/^ *//;s/ *$//')
-          echo "packages=$P" >> "$GITHUB_OUTPUT"
-          echo "最终 PACKAGES："
-          echo "$P" | tr ' ' '\n' | sed 's/^/  /'
-
-      - name: Prepare files overlay (LAN IP + repo files/)
-        run: |
-          # cyber3588-aib 的网口定义（LAN=eth1、WAN=eth0）官方 base-files
-          # 已内置，无需覆盖 /etc/config/network。这里只用一个 uci-defaults
-          # 脚本在首次启动时把 LAN 地址改成自定义值，其余全部沿用官方默认。
-          FILES="${{ runner.temp }}/files-overlay"
-          mkdir -p "$FILES/etc/uci-defaults"
-          LAN_IP="${{ inputs.lan_ip || '192.168.199.1' }}"
-          cat > "$FILES/etc/uci-defaults/99-lan-ip" <<EOF
-          #!/bin/sh
-          uci -q set network.lan.ipaddr='$LAN_IP'
-          uci -q commit network
-          exit 0
-          EOF
-          chmod 755 "$FILES/etc/uci-defaults/99-lan-ip"
-          # 合并仓库自带的 files/（如 apk 第三方 feed 的仓库配置与签名公钥）
-          if [ -d "${{ github.workspace }}/files" ]; then
-            cp -a "${{ github.workspace }}/files/." "$FILES/"
-          fi
-          find "$FILES" -type f
-
-      - name: Install SamWaf (static arm64 binary from official release)
-        run: |
-          set -e
-          # 二进制不入 git 树，构建时按 SAMWAF_VERSION 从官方 GitHub release 拉取，
-          # 校验 sha256 后装进 files-overlay 的 /usr/bin/samwaf。
-          # init 脚本(files/etc/init.d/samwaf) 与首启启用脚本(files/etc/uci-defaults/99-samwaf)
-          # 已在上一步随仓库 files/ 合并进 overlay。
-          FILES="${{ runner.temp }}/files-overlay"
-          INIT="$FILES/etc/init.d/samwaf"
-          UCIDEF="$FILES/etc/uci-defaults/99-samwaf"
-          # push/定时触发时 inputs 为空，用 != "false" 语义默认装上
-          if [ "${{ inputs.include_samwaf }}" = "false" ]; then
-            echo "⏭️ include_samwaf=false：移除 SamWaf 服务桩 + LuCI 管理页，不安装二进制"
-            rm -f  "$INIT" "$UCIDEF" "$FILES/usr/bin/samwaf" "$FILES/etc/config/samwaf"
-            rm -f  "$FILES/usr/libexec/samwafctl"
-            rm -f  "$FILES/usr/share/luci/menu.d/luci-app-samwaf.json"
-            rm -f  "$FILES/usr/share/rpcd/acl.d/luci-app-samwaf.json"
-            rm -f  "$FILES/www/luci-static/resources/view/samwaf.js"
-            rm -rf "$FILES/usr/share/samwaf"
-            exit 0
-          fi
-          VER="$SAMWAF_VERSION"
-          NUM="${VER#v}"   # checksums 文件名不含前导 v
-          BASE="https://github.com/samwafgo/SamWaf/releases/download/${VER}"
-          TARBALL="SamWaf_Linux_arm64.${VER}.tar.gz"
-          cd "$RUNNER_TEMP"
-          curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o "$TARBALL" "$BASE/$TARBALL"
-          curl -fL --retry 3 -o samwaf_checksums.txt "$BASE/SamWaf_${NUM}_checksums.txt"
-          # 上游 checksums.txt 里的文件名用了空格（与实际资产的点不一致），
-          # 故不能 sha256sum -c，只取 arm64 行的 hash 单独比对。
-          WANT=$(grep -i 'Linux_arm64' samwaf_checksums.txt | awk '{print $1}' | head -1)
-          GOT=$(sha256sum "$TARBALL" | awk '{print $1}')
-          echo "SamWaf ${VER} 期望 sha256: $WANT"
-          echo "SamWaf ${VER} 实际 sha256: $GOT"
-          if [ -z "$WANT" ] || [ "$WANT" != "$GOT" ]; then
-            echo "❌ SamWaf 校验失败，终止构建"; exit 1
-          fi
-          tar -xzf "$TARBALL"
-          BIN=$(find . -maxdepth 2 -type f -name 'SamWafLinux*' | head -1)
-          if [ -z "$BIN" ]; then echo "❌ 解包后找不到 SamWafLinux* 二进制"; exit 1; fi
-          # 确认是静态 aarch64 ELF（musl 兼容的关键），防止上游改了构建方式
-          FILEINFO=$(file "$BIN")
-          echo "$FILEINFO"
-          echo "$FILEINFO" | grep -q 'ARM aarch64' || { echo "❌ 不是 aarch64 二进制"; exit 1; }
-          echo "$FILEINFO" | grep -q 'statically linked' || { echo "❌ 不是静态链接，可能与 musl 不兼容"; exit 1; }
-          mkdir -p "$FILES/usr/bin"
-          install -m 0755 "$BIN" "$FILES/usr/bin/samwaf"
-          # 记录装入版本，供 LuCI 管理页显示（设备端升级成功后由 samwafctl 覆盖此文件）
-          mkdir -p "$FILES/usr/share/samwaf"
-          echo "$VER" > "$FILES/usr/share/samwaf/VERSION"
-          # 确保服务脚本与 LuCI 后端助手可执行（cp -a 已保留权限，这里双保险）
-          chmod 0755 "$INIT" "$UCIDEF" "$FILES/usr/libexec/samwafctl" 2>/dev/null || true
-          ls -lh "$FILES/usr/bin/samwaf"
-          echo "✅ SamWaf ${VER} 已装入 overlay:/usr/bin/samwaf（首启自动 enable+start，LuCI「服务→SamWaf 防火墙」或 :26666 管理）"
-
+          if [ "$INCLUDE_SAMWAF" = false ]; then exit 0; fi
+          WORK="$RUNNER_TEMP/samwaf-download"
+          mkdir -p "$WORK"
+          cd "$WORK"
+          NUM="${SAMWAF_VERSION#v}"
+          TARBALL="SamWaf_Linux_arm64.${SAMWAF_VERSION}.tar.gz"
+          BASE="https://github.com/samwafgo/SamWaf/releases/download/$SAMWAF_VERSION"
+          curl -fL --retry 5 --max-time 600 -o "$TARBALL" "$BASE/$TARBALL"
+          curl -fL --retry 3 --max-time 120 -o checksums.txt "$BASE/SamWaf_${NUM}_checksums.txt"
+          WANT=$(awk '/Linux_arm64/ {print $1}' checksums.txt)
+          [[ "$WANT" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$WANT" "$TARBALL" | sha256sum -c -
+          printf '%s  %s\n' "$WANT" "$TARBALL" >> "$RUNNER_TEMP/source-checksums.txt"
+          python3 "$GITHUB_WORKSPACE/scripts/extract-samwaf.py" "$TARBALL" samwaf
+          file samwaf | grep -q 'ARM aarch64'
+          file samwaf | grep -q 'statically linked'
+          FILES="$RUNNER_TEMP/files-overlay"
+          install -Dm755 samwaf "$FILES/usr/bin/samwaf"
+          install -d "$FILES/usr/share/samwaf"
+          printf '%s\n' "$SAMWAF_VERSION" > "$FILES/usr/share/samwaf/VERSION"
+          test -x "$FILES/etc/init.d/samwaf"
+          test -x "$FILES/etc/uci-defaults/99-samwaf"
+          test -x "$FILES/usr/libexec/samwafctl"
       - name: Build image
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/build-logs"
           cd "$IB_DIR"
-          LOG="$RUNNER_TEMP/build-image.log"
           set +e
-          # stdbuf 行缓冲保序，避免 `2>&1 | tee` 把 stderr 的报错和 stdout 回显乱序
-          stdbuf -oL -eL make -j$(nproc) image \
-            PROFILE="${PROFILE}" \
-            PACKAGES="${{ steps.pkgs.outputs.packages }}" \
-            FILES="${{ runner.temp }}/files-overlay" \
-            ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}" \
-            CONFIG_TARGET_ROOTFS_PARTSIZE="${{ inputs.rootfs_partsize || '4096' }}" 2>&1 | tee "$LOG"
+          stdbuf -oL -eL make -j"$(nproc)" image PROFILE="$PROFILE" PACKAGES="$PACKAGES" \
+            FILES="$RUNNER_TEMP/files-overlay" ROOTFS_PARTSIZE="$ROOTFS_PARTSIZE" \
+            CONFIG_TARGET_ROOTFS_PARTSIZE="$ROOTFS_PARTSIZE" 2>&1 | tee "$GITHUB_WORKSPACE/build-logs/build-image.log"
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            echo "===== make image 失败 rc=$rc ====="
-            mkdir -p "${{ github.workspace }}/build-logs"
-            cp -v "$LOG" "${{ github.workspace }}/build-logs/build-image.log"
-            # 最常见失败：apk 无法解析包/依赖（写错包名或依赖不在 IB 仓库里）。抓这些关键行。
-            echo "----- apk / 依赖 / 包缺失相关 -----"; grep -nE "ERROR:|unable to|not found|no such|unresolved|depends on|requires|cannot install|bad.*apk|UNTRUSTED|signature|mkndx|Package .* is" "$LOG" | tail -40
-            echo "----- make 级联错误 -----"; grep -nE "\*\*\* |Error [0-9]+|make\[[0-9]\]" "$LOG" | tail -20
-            # annotation 有数量上限，只发最关键行（转义 % 和 \r）
-            { grep -E "ERROR:|unable to|not found|unresolved|cannot install|UNTRUSTED|signature" "$LOG" | tail -8
-              grep -E "\*\*\* |Error [0-9]+" "$LOG" | tail -4; } \
-              | sed 's/%/%25/g; s/\r/%0D/g' | while IFS= read -r l; do
-                  [ -n "$l" ] && printf '::error::%s\n' "$l"
-                done
+            echo "::error::make image failed (exit $rc); see build-image-log artifact"
             exit "$rc"
           fi
-          echo "✅ make image 成功"
-
-      - name: Upload build log (on failure)
+      - name: Verify and collect exact release assets
+        run: python3 scripts/build-support.py collect
+      - uses: actions/upload-artifact@v4
         if: failure()
-        uses: actions/upload-artifact@v4
         with:
           name: build-image-log
           path: build-logs/
           retention-days: 14
-
-      - name: Collect artifacts
-        run: |
-          OUT="${{ github.workspace }}/out"
-          BIN="$IB_DIR/bin/targets/rockchip/armv8"
-          mkdir -p "$OUT"
-          cp "$BIN"/*cyber*.img.gz "$BIN"/*cyber*.manifest "$BIN"/sha256sums "$OUT/" 2>/dev/null || true
-          cp "$BIN"/*config.buildinfo "$OUT/" 2>/dev/null || true
-          ls -lh "$OUT"
-          if [ -z "$(ls -A "$OUT")" ]; then echo "❌ 没有生成任何镜像"; exit 1; fi
-          (cd "$OUT" && sha256sum * | tee SHA256SUMS.txt)
-
-      - name: Verify image (fail fast)
-        run: |
-          # 1) 管理页必需包必须在 —— 缺了固件能开机但进不去后台
-          MAN=$(ls "${{ github.workspace }}"/out/*.manifest | head -1)
-          echo "核对：$MAN（$(wc -l < "$MAN") 个包）"
-          NEED="uhttpd luci-mod-admin-full luci-mod-network luci-mod-system luci-mod-status luci-app-firewall"
-          MISSING=""
-          for p in $NEED; do
-            grep -q "^$p " "$MAN" && echo "  ✅ $p" || { echo "  ❌ $p 缺失"; MISSING="$MISSING $p"; }
-          done
-          [ -z "$MISSING" ] || { echo "❌ 缺少管理页必需包：$MISSING"; exit 1; }
-          # 2) recipe 剔除的包必须不在
-          for p in ${{ steps.pkgs.outputs.removed }}; do
-            n="${p#-}"
-            if grep -q "^$n " "$MAN"; then echo "  ❌ 应删未删: $n"; exit 1; fi
-            echo "  ✅ 已剔除: $n"
-          done
-          # 3) 设备驱动包必须在（profile 默认包）
-          for p in kmod-r8169 kmod-nvme kmod-rknpu; do
-            grep -q "^$p " "$MAN" || { echo "  ❌ 设备包缺失: $p"; exit 1; }
-          done
-          echo "✅ 校验通过"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: istoreos-${{ env.PROFILE }}-${{ github.run_number }}
+          name: istoreos-${{ env.PROFILE }}-${{ github.run_number }}-${{ github.run_attempt }}
           path: out/
+          if-no-files-found: error
           retention-days: 30
-
-      - name: "Publish firmware to Releases (dated history + rolling latest)"
+      - name: Publish dated and rolling releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          REPO="${{ github.repository }}"
-          cd "${{ github.workspace }}/out"
-          # 写入本次构建对应的上游 IB 哈希 —— 定时 check-upstream 的状态记录
-          echo "${IB_SHA:-unknown}" > ib-source-sha256.txt
-
-          # ── 1) 日期 Release：永久保留做历史 / 回滚 ──
-          DATE=$(date -u +%Y.%m.%d)
-          DTAG="v$DATE"
-          # 同一天多次构建：日期 tag 已存在则追加 run 号，保证唯一、绝不覆盖旧历史
-          if gh release view "$DTAG" -R "$REPO" >/dev/null 2>&1; then
-            DTAG="v$DATE.${{ github.run_number }}"
-          fi
-          gh release create "$DTAG" -R "$REPO" \
-            --target "${{ github.ref_name }}" \
-            --title "Cyber3588-AIB iStoreOS 固件 $DATE" \
-            --notes "构建于 $DATE (UTC)，commit ${{ github.sha }}，上游 IB sha256 ${IB_SHA:-unknown}。历史版本，永久保留以便回滚。下载 *-squashfs-sysupgrade.img.gz 后在 LuCI「系统 → 备份/升级」刷写。" \
-            *-squashfs-sysupgrade.img.gz \
-            *.manifest \
-            SHA256SUMS.txt \
-            ib-source-sha256.txt
-          echo "✅ 已创建日期 Release: $DTAG"
-
-          # ── 2) 滚动 firmware Release：永远最新 + 定时门控状态记录 ──
-          TAG=firmware
-          if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$REPO" \
-              --target "${{ github.ref_name }}" \
-              --title "Cyber3588-AIB iStoreOS 固件（最新）" \
-              --notes "由 build.yml 自动构建并滚动更新，本 Release 始终是最新固件；历史版本见各日期 Release（tag vYYYY.MM.DD）。下载 *-squashfs-sysupgrade.img.gz 后可在 LuCI「系统 → 备份/升级」一键刷写。"
-          fi
-          # 覆盖上传最新产物（只发固件本体 + manifest + 校验和 + IB 状态）
-          gh release upload "$TAG" -R "$REPO" --clobber \
-            *-squashfs-sysupgrade.img.gz \
-            *.manifest \
-            SHA256SUMS.txt \
-            ib-source-sha256.txt
-          echo "✅ 已更新滚动 Release: $TAG"
-
-          # 纯展示，加 || 兜底：即使 gh 字段/网络异常也不影响已完成的发布
-          gh release view "$DTAG" -R "$REPO" --json tagName,url,assets \
-            --jq '{tagName,url,assets:[.assets[].name]}' || echo "(发布已完成，view 校验忽略)"
+        run: bash scripts/publish.sh

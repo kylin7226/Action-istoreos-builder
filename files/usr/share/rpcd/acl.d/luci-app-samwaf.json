@@ -1,20 +1,23 @@
 {
 	"luci-app-samwaf": {
-		"description": "Grant access to SamWaf management",
+		"description": "Manage SamWaf",
 		"read": {
-			"ubus": {
-				"file": [ "exec", "read", "stat", "list" ]
-			},
+			"ubus": { "file": [ "exec" ] },
 			"file": {
-				"/usr/libexec/samwafctl": [ "exec" ]
+				"/usr/libexec/samwafctl status": [ "exec" ],
+				"/usr/libexec/samwafctl upgrade_status": [ "exec" ]
 			}
 		},
 		"write": {
-			"ubus": {
-				"file": [ "exec" ]
-			},
+			"ubus": { "file": [ "exec" ] },
 			"file": {
-				"/usr/libexec/samwafctl": [ "exec" ]
+				"/usr/libexec/samwafctl start": [ "exec" ],
+				"/usr/libexec/samwafctl stop": [ "exec" ],
+				"/usr/libexec/samwafctl restart": [ "exec" ],
+				"/usr/libexec/samwafctl enable": [ "exec" ],
+				"/usr/libexec/samwafctl disable": [ "exec" ],
+				"/usr/libexec/samwafctl set_port *": [ "exec" ],
+				"/usr/libexec/samwafctl upgrade *": [ "exec" ]
 			}
 		}
 	}

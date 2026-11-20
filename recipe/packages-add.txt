@@ -13,7 +13,7 @@
 #      例：mosdns（dllkids feed 只有 luci 壳，主程序在 ImmortalWrt 快照里）
 #
 # 注意：写错包名会让构建失败（no such package）。
-# 当前为空 = 不追加任何包。
+# 空列表表示不追加任何包；SamWaf 的运行依赖由构建脚本按开关追加。
 # ─────────────────────────────────────────────────────────────
 
 # DDNS-GO：自动把公网 IP 更新到域名服务商（阿里/腾讯/DNSPod/Cloudflare…），
@@ -30,8 +30,6 @@ luci-app-ddns-go
 kmod-rkgpu-bifrost-csf
 kmod-drm-rockchip
 libdrm
-# 可选：kmod-rga3（RK 2D 加速器 RGA），需要就取消注释
-# kmod-rga3
 
 # RK3588 多媒体内核驱动：
 #   kmod-rk_vcodec = RKMPP 视频编解码内核驱动（VPU，生成 /dev/mpp_service）
