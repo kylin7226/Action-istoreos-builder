@@ -65,18 +65,23 @@ frps
 # luci-app-frpc
 # luci-app-frps
 
-# Open-Box 透明代理（Docker 旁路由，容器共享宿主内核）所需内核模块：
-#   kmod-tun        = /dev/net/tun，Open-Box 容器 --device 映射必需
-#   kmod-macvlan    = 默认网络驱动，容器获取独立 LAN IP
-#   kmod-ipvlan     = 备选网络驱动（交换机/虚拟化不允许多 MAC 时用）
+# Open-Box 透明代理所需内核模块/工具（原生部署，安装脚本也会尝试补齐这些）：
+#   kmod-tun        = /dev/net/tun，sing-box tun 入站必需
+#   kmod-nft-queue  = nft queue，安装脚本列明的依赖
 #   kmod-nft-tproxy = nftables tproxy，UDP 透明代理
 #   kmod-nft-socket = tproxy 规则的 socket 匹配
-#   bridge/overlayfs/veth/策略路由已内建或已有，无需重复添加
+#   kmod-macvlan    = 「模拟终端」在 LAN 网桥挂独立 MAC 虚拟网口；
+#                     也兼容日后改用 Docker 旁路由部署
+#   kmod-ipvlan     = Docker 旁路由备选网络驱动（原生部署用不到，保留备用）
+#   ip-full         = 完整 iproute2，策略路由 ip rule（busybox ip 功能不足）
+#   nft-nat/veth/ca-bundle 镜像已含；bridge/overlayfs/策略路由内核内建
 kmod-tun
-kmod-macvlan
-kmod-ipvlan
+kmod-nft-queue
 kmod-nft-tproxy
 kmod-nft-socket
+kmod-macvlan
+kmod-ipvlan
+ip-full
 
 # BBR TCP 拥塞控制：装包即自动加载 tcp_bbr 并写入
 #   /etc/sysctl.d/12-tcp-bbr.conf（net.ipv4.tcp_congestion_control=bbr），
