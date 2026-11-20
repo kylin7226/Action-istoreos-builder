@@ -64,3 +64,21 @@ frps
 #   build.yml 的注入步骤已支持自动从 feed 拉取）
 # luci-app-frpc
 # luci-app-frps
+
+# Open-Box 透明代理（Docker 旁路由，容器共享宿主内核）所需内核模块：
+#   kmod-tun        = /dev/net/tun，Open-Box 容器 --device 映射必需
+#   kmod-macvlan    = 默认网络驱动，容器获取独立 LAN IP
+#   kmod-ipvlan     = 备选网络驱动（交换机/虚拟化不允许多 MAC 时用）
+#   kmod-nft-tproxy = nftables tproxy，UDP 透明代理
+#   kmod-nft-socket = tproxy 规则的 socket 匹配
+#   bridge/overlayfs/veth/策略路由已内建或已有，无需重复添加
+kmod-tun
+kmod-macvlan
+kmod-ipvlan
+kmod-nft-tproxy
+kmod-nft-socket
+
+# BBR TCP 拥塞控制：装包即自动加载 tcp_bbr 并写入
+#   /etc/sysctl.d/12-tcp-bbr.conf（net.ipv4.tcp_congestion_control=bbr），
+#   开机生效；内核 6.12 自带 TCP 内部 pacing，不依赖 kmod-sched-core(fq)
+kmod-tcp-bbr
