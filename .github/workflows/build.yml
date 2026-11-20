@@ -178,7 +178,9 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            echo "::error::make image failed (exit $rc); see build-image-log artifact"
+            err=$(grep -aE 'ERROR|error:|unable to|conflict|no such package|Cannot' "$GITHUB_WORKSPACE/build-logs/build-image.log" | tail -n 20)
+            [ -n "$err" ] || err=$(tail -n 30 "$GITHUB_WORKSPACE/build-logs/build-image.log")
+            echo "::error::make image failed (exit $rc): ${err//$'\n'/%0A}"
             exit "$rc"
           fi
       - name: Verify and collect exact release assets
