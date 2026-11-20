@@ -87,6 +87,7 @@ mount
 - `recipe/packages-remove.txt`：显式剔除包，包含 defensive no-op 条目。
 - 禁止同名重复、追加/剔除冲突和无效名称；保留 Docker/NFS/GPU/风扇相关必要依赖。
 - 第三方包通过 APK 的签名索引选择版本并下载，使用仓库内 dllkids 公钥验证索引，再由 `apk fetch` 按索引中的身份校验包内容，不再解析 HTML 或按字符串猜版本。该源的单个 APK 不一定带可独立验证的签名，不能将索引信任误写成逐包签名。
+- mwan3 / luci-app-mwan3 / luci-i18n-mwan3-zh-cn 不在 iStoreOS IB 与 dllkids feed 中，取自官方 OpenWrt `25.12.6` release 的 noarch APK（架构无关脚本，与 iStoreOS 25.12 同代）。workflow 固定版本与整文件 SHA256（已交叉核对官方服务器和清华镜像），官方源失败时回退清华镜像，哈希记录进 `source-checksums.txt`。这是 SamWaf 式的 HTTPS+校验和完整性模型，不是逐包签名验证；升级 OpenWrt 基线时需重新固定版本与哈希。
 - 构建仍信任官方 IB 和被信任的包发布者；校验和用于完整性，不代表安全审计。
 - 用户添加新的第三方包时，需更新 workflow 的支持映射；依赖仍由 IB 的 APK 求解器处理。
 

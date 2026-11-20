@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import shlex
 import struct
@@ -36,6 +37,15 @@ class BuildTests(unittest.TestCase):
         for name in ('quickstart', 'luci-app-quickstart', 'luci-app-diskman', 'parted', 'kmod-bluetooth'):
             self.assertIn(name, removed)
         self.assertFalse(set(build.DRIVERS + build.DOCKER + ['rpcbind', 'libsensors5', 'libdrm']) & set(removed))
+
+    def test_mwan3_recipe_entries_have_pinned_workflow_hashes(self):
+        workflow = (ROOT / '.github/workflows/build.yml').read_text()
+        self.assertIn('OWRT_RELEASE:', workflow)
+        pinned = re.findall(r'^\s*(?:packages|luci)/(\S+\.apk)\s+([0-9a-f]{64})\s*$', workflow, re.M)
+        for name in ('mwan3', 'luci-app-mwan3', 'luci-i18n-mwan3-zh-cn'):
+            self.assertIn(name, build.recipe('packages-add.txt'))
+            matches = [h for f, h in pinned if f.startswith(name + '-')]
+            self.assertEqual(len(matches), 1, f'{name} must have exactly one pinned apk')
 
     def test_option_matrix(self):
         for gui in ('true', 'false'):

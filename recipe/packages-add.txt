@@ -11,6 +11,8 @@
 #      （apk mkndx --allow-untrusted），例：ddns-go、luci-app-ddns-go、luci-app-mosdns
 #   3. 上游快照仓库（如 https://downloads.immortalwrt.org/snapshots/packages/aarch64_generic/packages/）
 #      例：mosdns（dllkids feed 只有 luci 壳，主程序在 ImmortalWrt 快照里）
+#   4. 官方 OpenWrt release 的 noarch apk（IB 缺失的架构无关包），
+#      workflow 固定版本号+整文件 SHA256 下载校验后注入，例：mwan3 三件套
 #
 # 注意：写错包名会让构建失败（no such package）。
 # 空列表表示不追加任何包；SamWaf 的运行依赖由构建脚本按开关追加。
@@ -89,7 +91,11 @@ ip-full
 kmod-tcp-bbr
 
 # 多出口负载均衡/故障切换（电信+移动双 PPPoE，配置见 docs/multiwan.md）：
-#   mwan3 依赖 kmod-ipt-connmark/iptables-mod-connmark 等由 apk 自动解析；
+#   iStoreOS IB 与 dllkids feed 都没有原版 mwan3（只有 nft 魔改变体），
+#   三个包取自官方 OpenWrt 25.12.6 release 的 noarch apk（与 iStoreOS 25.12
+#   同代、架构无关脚本），由 build.yml 按固定 SHA256 校验后注入 packages/。
+#   依赖 ip/ip6tables/ipset/iptables/iptables-mod-conntrack-extra/
+#   iptables-mod-ipopt/jshn/rpcd-mod-ucode 由 IB 仓库的 apk 求解器解析；
 #   PPPoE 组件(ppp/ppp-mod-pppoe)与 ip-full 镜像已含
 mwan3
 luci-app-mwan3

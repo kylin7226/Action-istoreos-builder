@@ -47,6 +47,7 @@ env:
   IB_FILE: istoreos-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst
   PROFILE: cyber_cyber3588-aib
   SAMWAF_VERSION: v1.3.24
+  OWRT_RELEASE: 25.12.6
 
 jobs:
   test:
@@ -142,6 +143,29 @@ jobs:
               cp "$package" packages/
             done
           fi
+      - name: Fetch pinned OpenWrt mwan3 packages
+        run: |
+          if ! python3 -c "import json,sys; sys.exit(0 if 'mwan3' in json.load(open(sys.argv[1]))['required'] else 1)" "$RUNNER_TEMP/build-config.json"; then
+            exit 0
+          fi
+          cd "$IB_DIR"
+          OWRT_BASE="https://downloads.openwrt.org/releases/$OWRT_RELEASE/packages/aarch64_generic"
+          MIRROR_BASE="https://mirrors.tuna.tsinghua.edu.cn/openwrt/releases/$OWRT_RELEASE/packages/aarch64_generic"
+          mkdir -p "$RUNNER_TEMP/owrt-packages"
+          # noarch packages from the official OpenWrt release; iStoreOS IB does not ship them.
+          # Whole-file SHA256 pinned after cross-checking official server and Tsinghua mirror.
+          while read -r rel want; do
+            out="$RUNNER_TEMP/owrt-packages/$(basename "$rel")"
+            curl -fL --retry 3 --max-time 300 -o "$out" "$OWRT_BASE/$rel" ||
+              curl -fL --retry 3 --max-time 300 -o "$out" "$MIRROR_BASE/$rel"
+            printf '%s  %s\n' "$want" "$out" | sha256sum -c -
+            printf '%s  %s\n' "$want" "$(basename "$rel")" >> "$RUNNER_TEMP/source-checksums.txt"
+            cp "$out" packages/
+          done <<'EOF'
+          packages/mwan3-2.12.0-r3.apk d837e13e0cb0bed135d16167d0caebd855fe421888ff07c3bc93a2d954468440
+          luci/luci-app-mwan3-26.320.60423~5331286.apk 376a81c1c144754825d609c3c66cb6b4897d9f022deab30b45637f5d4780bf4d
+          luci/luci-i18n-mwan3-zh-cn-26.320.60423~5331286.apk fbe5f9bc8969857edba5439892b382e1d4a4869da4d4dc7b3ade4e86e45e1bdf
+          EOF
       - name: Install verified SamWaf binary
         run: |
           if [ "$INCLUDE_SAMWAF" = false ]; then exit 0; fi
