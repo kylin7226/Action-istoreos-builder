@@ -94,6 +94,16 @@ def checksum(path):
     return digest.hexdigest()
 
 
+def verify_gzip(path):
+    proc = subprocess.run(['gzip', '-t', str(path)], capture_output=True, text=True)
+    if proc.returncode == 0:
+        return
+    # sysupgrade images append a metadata trailer after the gzip stream.
+    if proc.returncode == 2 and 'decompression OK, trailing garbage ignored' in proc.stderr:
+        return
+    raise ValueError(f'gzip integrity check failed for {path.name}: {proc.stderr.strip()}')
+
+
 def collect():
     temp = Path(os.environ['RUNNER_TEMP'])
     config = json.loads((temp / 'build-config.json').read_text())
@@ -104,7 +114,7 @@ def collect():
     for path in (image, manifest):
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError(f'Missing or empty artifact: {path.name}')
-    subprocess.run(['gzip', '-t', str(image)], check=True)
+    verify_gzip(image)
     installed = {line.split()[0] for line in manifest.read_text().splitlines() if line.strip()}
     missing = set(config['required']) - installed
     forbidden = set(config['removed']) & installed

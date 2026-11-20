@@ -75,6 +75,16 @@ class BuildTests(unittest.TestCase):
             with patch.dict(os.environ, {'RUNNER_TEMP': td, 'IB_DIR': td, 'PROFILE': 'test'}):
                 with self.assertRaisesRegex(ValueError, 'artifact'): build.collect()
 
+    def test_gzip_accepts_sysupgrade_trailer_but_rejects_corruption(self):
+        with tempfile.TemporaryDirectory() as td:
+            image = Path(td) / 'image.img.gz'
+            with gzip.open(image, 'wb') as stream: stream.write(b'firmware')
+            build.verify_gzip(image)
+            with image.open('ab') as stream: stream.write(b'sysupgrade-metadata-trailer')
+            build.verify_gzip(image)
+            image.write_bytes(b'not gzip at all')
+            with self.assertRaisesRegex(ValueError, 'gzip integrity'): build.verify_gzip(image)
+
     def test_exact_artifacts_and_checksums(self):
         with tempfile.TemporaryDirectory() as td:
             temp = Path(td)
