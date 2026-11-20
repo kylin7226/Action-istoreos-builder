@@ -182,7 +182,17 @@ jobs:
             exit "$rc"
           fi
       - name: Verify and collect exact release assets
-        run: python3 scripts/build-support.py collect
+        run: |
+          set +e
+          msg=$(python3 scripts/build-support.py collect 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$msg"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::collect failed: ${msg//$'\n'/%0A}"
+            ls -la "$IB_DIR/build_dir" "$IB_DIR/bin/targets/rockchip/armv8" || true
+            exit "$rc"
+          fi
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

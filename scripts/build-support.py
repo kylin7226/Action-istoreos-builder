@@ -60,6 +60,7 @@ def configure():
         removed += DOCKER
     if options['INCLUDE_SAMWAF']:
         wanted += SAMWAF
+    wanted += DRIVERS
     if set(wanted) & set(removed):
         raise ValueError('A required package is explicitly removed')
     wanted = sorted(set(wanted))
@@ -78,7 +79,7 @@ def configure():
                     f"uci -q set network.lan.ipaddr='{lan}' && uci -q commit network\n")
     init.chmod(0o755)
     config = {'lan_ip': lan, 'rootfs_partsize': size, 'options': options,
-              'required': wanted + DRIVERS, 'removed': removed}
+              'required': wanted, 'removed': removed}
     (Path(os.environ['RUNNER_TEMP']) / 'build-config.json').write_text(json.dumps(config, indent=2) + '\n')
     with open(os.environ['GITHUB_ENV'], 'a') as output:
         output.write(f'PACKAGES={" ".join(wanted + ["-" + p for p in removed])}\n')
